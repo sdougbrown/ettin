@@ -379,6 +379,62 @@ document.addEventListener("click", (e) => {
   if (!mentionBox.contains(e.target) && e.target !== inputEl) closeMention();
 });
 
+/* ---------- approvals ---------- */
+
+const approvalsEl = document.getElementById("approvals");
+const approvalListEl = document.getElementById("approval-list");
+const approvalModeEl = document.getElementById("approval-mode");
+
+function renderApprovals(approvals) {
+  if (!approvals) return;
+  approvalModeEl.checked = approvals.mode === "writes";
+  const pending = (approvals.requests ?? []).filter((r) => r.state === "pending");
+  approvalsEl.hidden = !approvalModeEl.checked && pending.length === 0;
+  approvalListEl.innerHTML = "";
+  for (const r of pending) {
+    const li = document.createElement("li");
+    li.className = "approval-item";
+    li.style.setProperty("--head-color", colorFor(r.head));
+    li.innerHTML =
+      `<span class="approval-who">${esc(r.head)}</span>` +
+      `<span class="approval-what">${esc(r.tool)} → ${esc(r.path || "(no path)")}</span>` +
+      `<button class="allow" data-id="${esc(r.id)}">allow</button>` +
+      `<button class="deny" data-id="${esc(r.id)}">deny</button>`;
+    approvalListEl.appendChild(li);
+  }
+}
+
+async function loadApprovals() {
+  try {
+    const res = await fetch("/api/approvals");
+    const body = await res.json();
+    renderApprovals(body.approvals);
+  } catch {
+    /* approvals endpoint unavailable */
+  }
+}
+
+document.getElementById("approval-mode").addEventListener("change", async (e) => {
+  const mode = e.target.checked ? "writes" : "off";
+  await fetch("/api/approvals/mode", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+});
+
+approvalListEl.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const decision = btn.classList.contains("allow") ? "allow" : "deny";
+  btn.disabled = true;
+  await fetch("/api/approvals", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: btn.dataset.id, decision }),
+  });
+});
+
 /* ---------- SSE ---------- */
 
 function connect() {
@@ -401,6 +457,9 @@ function connect() {
         break;
       case "head_status":
         headStatus(data.head, data.running);
+        break;
+      case "approval_update":
+        renderApprovals(data.approvals);
         break;
     }
   });
@@ -491,6 +550,7 @@ async function boot() {
       `<div class="empty-room"><div class="glyph">etra·etta</div>` +
       `<p>The room is open. Say something — every head hears you.</p></div>`;
   }
+  await loadApprovals();
   connect();
 }
 

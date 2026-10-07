@@ -60,6 +60,14 @@ npm start          # http://localhost:7947
 Options: `--db ./data/ettin.sqlite --workspace /path/to/repo --port 7947
 --heads a,b --thinking off --max-depth 2 --max-auto 8`.
 
+**Operator approvals:** an approval mode (`off` default, toggle in the UI or
+`POST /api/approvals/mode`) makes every head write-class call park as a
+pending request in a session-scoped doc; the tool call waits for the
+operator's allow/deny from the web UI (SSE updates, room-log audit trail,
+10-minute timeout denies). This is the durable-head analog of avenor's
+`permission.request`/resolver pipe — when avenor-dispatched heads land, both
+surfaces should render as the same operator card.
+
 Flags: `--turn-deadline 15m` (per-activation deadline; a hung head is
 aborted and the room returns to the operator), fresh workspaces are
 git-initialized (the mutation fingerprint's substrate).

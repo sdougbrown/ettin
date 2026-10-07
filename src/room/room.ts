@@ -93,6 +93,30 @@ export const ArbiterDoc = defineDoc<ArbiterState>({
   }),
 });
 
+/** Operator approval gate for head writes. Session-scoped. The tool wrapper
+ * parks a write claim here and waits; the operator resolves it from the web
+ * UI. mode "writes" requires approval for every write-class call; "off" is
+ * the spike behavior (arbiter policy only). */
+export type ApprovalRequest = {
+  id: string;
+  head: string;
+  tool: string;
+  path: string;
+  state: "pending" | "allowed" | "denied";
+  requestedAt: number;
+  resolvedAt?: number;
+};
+
+export const ApprovalDoc = defineDoc<{
+  mode: "off" | "writes";
+  requests: ApprovalRequest[];
+}>({
+  kind: "ettin.approvals",
+  version: 1,
+  scope: "session",
+  initial: () => ({ mode: "off", requests: [] }),
+});
+
 /** Head roster: name → durable conversation. Session-scoped, survives restart. */
 export type HeadRecord = {
   name: string;

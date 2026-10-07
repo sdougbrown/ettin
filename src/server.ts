@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EttinApp } from "./app.ts";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import type { RoomEvent } from "./room/room.ts";
+import { ApprovalDoc, RoomDoc, RoomEventEntry, type RoomEvent } from "./room/room.ts";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -128,8 +128,18 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
     streamControllers.add(() => void stream.stop());
   }
 
+  async function watchApprovals(ctx: Context): Promise<void> {
+    const doc = await app.rc.harness.watchDoc(ApprovalDoc, ctx);
+    if (!doc) return;
+    broadcast("approval_update", { approvals: doc.value });
+    await doc.start(async (value) => {
+      broadcast("approval_update", { approvals: value });
+    });
+  }
+
   async function startStreams(ctx: Context): Promise<void> {
     await watchRoom(ctx);
+    await watchApprovals(ctx);
     for (const h of app.heads.list()) await watchHead(h.name, h.conversationId, ctx);
   }
 
@@ -178,6 +188,65 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
         }
         const { eventId } = await app.say(body.text.trim(), body.targets ?? []);
         json(res, 200, { eventId });
+        return;
+      }
+      if (url.pathname === "/api/approvals" && req.method === "GET") {
+        const current = await app.rc.harness.snapshot(ApprovalDoc, BACKGROUND_CONTEXT);
+        json(res, 200, { approvals: current ?? { mode: "off", requests: [] } });
+        return;
+      }
+      if (url.pathname === "/api/approvals" && req.method === "POST") {
+        const body = JSON.parse((await readBody(req)) || "{}") as {
+          id?: string;
+          decision?: string;
+        };
+        if (!body.id || (body.decision !== "allow" && body.decision !== "deny")) {
+          json(res, 400, { error: "id and decision (allow|deny) required" });
+          return;
+        }
+        const result = await app.rc.harness.commit(async (tx) => {
+          const d = await tx.doc(ApprovalDoc);
+          const request = d.requests.find((r) => r.id === body.id);
+          if (!request) return { error: "unknown approval request" };
+          if (request.state !== "pending") return { error: "already resolved" };
+          request.state = body.decision === "allow" ? "allowed" : "denied";
+          request.resolvedAt = Date.now();
+          const counter = await tx.doc(RoomDoc, app.rc.room.id);
+          counter.seq += 1;
+          counter.counts.room = (counter.counts.room ?? 0) + 1;
+          const event: RoomEvent = {
+            id: `room${counter.counts.room}`,
+            seq: counter.seq,
+            ts: Date.now(),
+            author: "room",
+            kind: "system",
+            body: `operator ${request.state} ${request.head}'s write to ${request.path}`,
+            visibility: "room",
+            depth: 0,
+          };
+          await tx.appendEntry(RoomEventEntry, app.rc.room.id, { data: event });
+          return { ok: true };
+        }, BACKGROUND_CONTEXT);
+        if ((result as { error?: string }).error) {
+          json(res, 409, result);
+          return;
+        }
+        json(res, 200, { ok: true });
+        return;
+      }
+      if (url.pathname === "/api/approvals/mode" && req.method === "POST") {
+        const body = JSON.parse((await readBody(req)) || "{}") as { mode?: string };
+        if (body.mode !== "off" && body.mode !== "writes") {
+          json(res, 400, { error: "mode must be off|writes" });
+          return;
+        }
+        const mode = body.mode as "off" | "writes";
+        await app.rc.harness.commit(async (tx) => {
+          const d = await tx.doc(ApprovalDoc);
+          d.mode = mode;
+          return undefined;
+        }, BACKGROUND_CONTEXT);
+        json(res, 200, { ok: true });
         return;
       }
       if (url.pathname === "/api/heads" && req.method === "POST") {

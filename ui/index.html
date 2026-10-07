@@ -61,6 +61,16 @@
           <div id="turn-status" class="dim small"></div>
         </header>
         <section id="transcript" aria-live="polite"></section>
+        <section id="approvals" hidden>
+          <div class="approvals-head">
+            <span class="approvals-title">approvals</span>
+            <label class="approval-toggle">
+              <input type="checkbox" id="approval-mode" />
+              require approval for writes
+            </label>
+          </div>
+          <ul id="approval-list"></ul>
+        </section>
         <footer id="composer">
           <div id="targets" class="targets"></div>
           <div class="composer-row">
