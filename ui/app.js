@@ -20,6 +20,7 @@ const transcriptEl = document.getElementById("transcript");
 const headListEl = document.getElementById("head-list");
 const inputEl = document.getElementById("input");
 const sendEl = document.getElementById("send");
+const stopEl = document.getElementById("stop");
 const targetsEl = document.getElementById("targets");
 const connEl = document.getElementById("conn");
 
@@ -245,7 +246,10 @@ async function send() {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      alert(`ettin: ${body.error ?? res.status}`);
+      document.getElementById("turn-status").textContent = body.error ?? `error ${res.status}`;
+      setTimeout(() => {
+        document.getElementById("turn-status").textContent = "";
+      }, 4000);
     } else {
       inputEl.value = "";
       autoGrow();
@@ -257,6 +261,18 @@ async function send() {
 }
 
 sendEl.addEventListener("click", send);
+stopEl.addEventListener("click", async () => {
+  stopEl.disabled = true;
+  try {
+    const res = await fetch("/api/turn/abort", { method: "POST" });
+    if (!res.ok && res.status !== 409) {
+      const body = await res.json().catch(() => ({}));
+      alert(`ettin: ${body.error ?? res.status}`);
+    }
+  } finally {
+    stopEl.disabled = false;
+  }
+});
 inputEl.addEventListener("input", () => {
   // Preview @target chips while typing.
   const { targets } = parseTargets(inputEl.value);
@@ -435,6 +451,19 @@ approvalListEl.addEventListener("click", async (e) => {
   });
 });
 
+/* ---------- busy state ---------- */
+
+let runningHeads = 0;
+
+function updateBusy(delta) {
+  if (delta === undefined) return;
+  runningHeads = Math.max(0, runningHeads + (delta ? 1 : -1));
+  const busy = runningHeads > 0;
+  sendEl.disabled = busy;
+  document.getElementById("turn-status").textContent = busy ? "heads are working…" : "";
+  stopEl.style.display = busy ? "" : "none";
+}
+
 /* ---------- SSE ---------- */
 
 function connect() {
@@ -457,6 +486,7 @@ function connect() {
         break;
       case "head_status":
         headStatus(data.head, data.running);
+        updateBusy(data.running ? true : undefined);
         break;
       case "approval_update":
         renderApprovals(data.approvals);

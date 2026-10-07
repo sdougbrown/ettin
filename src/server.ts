@@ -190,6 +190,17 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
         json(res, 200, { eventId });
         return;
       }
+      if (url.pathname === "/api/turn/abort" && req.method === "POST") {
+        const live = await app.rc.harness.inspect(BACKGROUND_CONTEXT);
+        const turn = live.tasks.find((t) => t.record.kind === "ettin.turn");
+        if (!turn) {
+          json(res, 409, { error: "no turn is running" });
+          return;
+        }
+        await app.rc.harness.abortTask(turn.record.id, BACKGROUND_CONTEXT);
+        json(res, 200, { ok: true });
+        return;
+      }
       if (url.pathname === "/api/approvals" && req.method === "GET") {
         const current = await app.rc.harness.snapshot(ApprovalDoc, BACKGROUND_CONTEXT);
         json(res, 200, { approvals: current ?? { mode: "off", requests: [] } });

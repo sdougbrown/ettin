@@ -68,6 +68,12 @@ operator's allow/deny from the web UI (SSE updates, room-log audit trail,
 `permission.request`/resolver pipe — when avenor-dispatched heads land, both
 surfaces should render as the same operator card.
 
+**Stop button:** the operator can abort a running turn (POST
+`/api/turn/abort`); the turn task aborts its heads' in-flight runs and
+settles as aborted. Heads: `--head name=model` (repeatable) for per-head
+models, or `--heads a,b` on the default model; the sidebar can add heads
+at runtime.
+
 Flags: `--turn-deadline 15m` (per-activation deadline; a hung head is
 aborted and the room returns to the operator), fresh workspaces are
 git-initialized (the mutation fingerprint's substrate).

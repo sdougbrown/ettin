@@ -555,6 +555,12 @@ body {
   border-color: #39405a;
 }
 
+#stop {
+  background: var(--bg-inset);
+  color: var(--err);
+  border: 1px solid #5a2b2b;
+}
+
 #send {
   background: var(--accent);
   color: #17130a;

@@ -36,6 +36,7 @@ const { values } = parseArgs({
     excerpt: { type: "string", default: "1200" },
     thinking: { type: "string", default: "off" },
     heads: { type: "string", default: "a,b" },
+    head: { type: "string", multiple: true },
   },
 });
 
@@ -100,13 +101,22 @@ async function main(): Promise<void> {
   });
   await app.open();
 
-  // Bootstrap the heads listed in --heads with default models.
-  const names = values
-    .heads!.split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const name of names) {
-    await app.addHead(name);
+  // Bootstrap heads: --head name=model (repeatable, per-head model) wins
+  // over --heads (bare names on the default model).
+  if (values.head && values.head.length > 0) {
+    for (const spec of values.head) {
+      const [name, model] = spec.split("=");
+      if (!name || !model) throw new Error(`--head must be name=model, got "${spec}"`);
+      await app.addHead(name.trim().toLowerCase(), model.trim());
+    }
+  } else {
+    const names = values
+      .heads!.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const name of names) {
+      await app.addHead(name);
+    }
   }
 
   serve(app, { port: Number(values.port), uiDir: join(here, "..", "ui") });
