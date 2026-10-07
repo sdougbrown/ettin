@@ -44,7 +44,8 @@ export interface Decision {
 }
 
 export interface Governor {
-  decide(state: State): Decision;
+  /** Async allowed: transport-backed governors await their API call. */
+  decide(state: State): Decision | Promise<Decision>;
 }
 
 const MARKER_LINE = /^<\|room:\s*([a-z-]+)\s*(?:\|\s*([^|>]*?)\s*)?\|>$/i;
@@ -72,7 +73,7 @@ export function hasAskMarker(out: string): boolean {
 }
 
 /** Resolve a marker's target list: a named head, "all", or absent (all). */
-function markerTargets(m: RoomMarker, participants: string[], speaker: string): string[] {
+export function markerTargets(m: RoomMarker, participants: string[], speaker: string): string[] {
   const wanted =
     m.arg === "" || m.arg.toLowerCase() === "all"
       ? participants

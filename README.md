@@ -30,7 +30,7 @@ avenor reference implementation's `HumanTurn`.
 | Concern | Where |
 |---|---|
 | Room log (visibility, causation, depth) | `src/room/room.ts` — custom `ettin.event` entries + counter doc |
-| Turn governor (marker stub) | `src/room/governor.ts` — `MarkerGovernor`, same envelope |
+| Turn governors | `src/room/governor.ts`, `src/room/governor_jev.ts` — marker floor + typed decision APIs |
 | Projection + peer injection | `src/room/projection.ts` — channel-wrap convention, verbatim |
 | Mutation arbiter | `src/room/arbiter.ts` — tool wrappers, atomic holder claims |
 | Turn loop (HumanTurn) | `src/room/coordinator.ts` — durable `ettin.turn` task |
@@ -59,6 +59,14 @@ npm start          # http://localhost:7947
 
 Options: `--db ./data/ettin.sqlite --workspace /path/to/repo --port 7947
 --heads a,b --thinking off --max-depth 2 --max-auto 8`.
+
+Governors: `--governor marker` (deterministic floor), `--governor jev` (official
+TypeSafe System One, key at `~/.secrets/jev.key`), or `--governor decisions`
+(a tabbyAPI `/v1/decisions` endpoint, default `http://localhost:8081/v1/decisions`,
+current loaded model). Decision APIs fall back to the marker on any error; the
+envelope (budget, depth cap, needs_human ≥ 0.8, requests_peer ≥ 0.8 honoring)
+is enforced identically for all three. `npm run compare` replays synthetic
+room states through both decision APIs side by side.
 
 Models come from `~/.pi/agent/models.json` (the `sparky` LiteLLM provider,
 same as the avenor spike). When sparky is unreachable the scripted faux

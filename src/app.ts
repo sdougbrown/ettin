@@ -30,6 +30,7 @@ import { loadModels, type ModelSource } from "./models.ts";
 
 export interface AppOptions {
   prefer?: "sparky" | "faux";
+  governor?: Governor;
   /** Injected model source (tests); otherwise loadModels() decides. */
   models?: ModelSource;
   dbPath: string;
@@ -53,6 +54,7 @@ export class EttinApp {
   async open(ctx: Context = BACKGROUND_CONTEXT): Promise<void> {
     this.models =
       this.options.models ?? loadModels({ allowFauxFallback: true, prefer: this.options.prefer });
+    if (this.options.governor) this.governor = this.options.governor;
     const registry = createRegistry();
 
     const storage =

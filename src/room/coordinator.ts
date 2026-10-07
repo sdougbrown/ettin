@@ -361,7 +361,7 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           budgetRemaining: cp.budget,
           maxDepth,
         };
-        const dec: Decision = governor.decide(state);
+        const dec: Decision = await governor.decide(state);
         await appendGovernor(
           runtime,
           dec.activate.length === 0

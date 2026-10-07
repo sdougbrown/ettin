@@ -2,7 +2,7 @@
   "name": "ettin-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Ettin — a two-headed room for persistent coding agents, over pi-durable.",
+  "description": "Ettin \u2014 a two-headed room for persistent coding agents, over pi-durable.",
   "type": "module",
   "scripts": {
     "start": "tsx src/main.ts",
@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "fmt": "oxfmt --write src ui scripts",
-    "fmt:check": "oxfmt --check src ui scripts"
+    "fmt:check": "oxfmt --check src ui scripts",
+    "compare": "tsx scripts/governor-compare.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "^1.0.4",
