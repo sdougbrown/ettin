@@ -46,6 +46,14 @@ interface Roster {
   nameOf: Map<ConversationId, string>;
 }
 
+/** The coding tools must live in an installed extension: an agent's `tools`
+ * array is stored by name and resolved against the selected extensions' tool
+ * pool, so bare tool objects in the agent config resolve to nothing. */
+const Coding = defineExtension({
+  name: "ettin-coding",
+  tools: [readTool, writeTool, editTool, bashTool],
+});
+
 export class HeadManager {
   private roster: Roster = { byName: new Map(), nameOf: new Map() };
   private extensions:
@@ -70,6 +78,7 @@ export class HeadManager {
       headNameOf,
       writeTool as ToolRegistration<any, any>,
       editTool as ToolRegistration<any, any>,
+      this.rc.room.id,
     );
     const roomTools = defineExtension({
       name: "ettin-room",
@@ -80,7 +89,7 @@ export class HeadManager {
 
   extensionList(): Extension<ToolRegistration>[] {
     if (!this.extensions) throw new Error("installExtensions() first");
-    return [this.extensions.arbiter, this.extensions.roomTools];
+    return [Coding, this.extensions.arbiter, this.extensions.roomTools];
   }
 
   private roomLogTool() {

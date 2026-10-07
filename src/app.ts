@@ -15,6 +15,7 @@ import {
   MemoryStorage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import {
   RoomDoc,
   RoomEventEntry,
@@ -31,6 +32,8 @@ import { loadModels, type ModelSource } from "./models.ts";
 export interface AppOptions {
   prefer?: "sparky" | "faux";
   governor?: Governor;
+  /** Per-activation deadline; 0 uses the 15-minute default. */
+  turnTimeoutMs?: number;
   /** Injected model source (tests); otherwise loadModels() decides. */
   models?: ModelSource;
   dbPath: string;
@@ -61,7 +64,15 @@ export class EttinApp {
       this.options.dbPath === ":memory:"
         ? new MemoryStorage()
         : await openNodeSqliteStorage(this.options.dbPath);
-    const harness = await Harness.open(storage, { models: this.models.models, registry }, ctx);
+    const harness = await Harness.open(
+      storage,
+      {
+        models: this.models.models,
+        registry,
+        env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? this.options.workspace }),
+      },
+      ctx,
+    );
 
     // The room conversation: transcript of ettin.event entries. No tools,
     // no extensions, and nothing is ever submitted to it — only writes.
@@ -86,6 +97,8 @@ export class EttinApp {
       maxAuto: this.options.maxAuto,
       excerptLimit: this.options.excerptLimit,
       roomRef: this.options.roomRef,
+      turnTimeoutMs: this.options.turnTimeoutMs ?? 15 * 60_000,
+      workspace: this.options.workspace,
     });
     registry.install(defineExtension({ name: "ettin-turn", tasks: [this.turnTask] }));
 

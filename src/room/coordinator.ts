@@ -12,6 +12,10 @@
  * envelope.
  */
 import type { Context } from "@earendil-works/chord";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import {
   defineTask,
@@ -84,6 +88,8 @@ export interface TurnResult {
 
 export interface CoordinatorDeps {
   rc: RoomContext;
+  turnTimeoutMs: number;
+  workspace: string;
   governor: Governor;
   maxDepth: number;
   maxAuto: number;
@@ -117,8 +123,12 @@ function textOf(message: { content?: { type: string; text?: string }[] } | undef
     .trim();
 }
 
+function debugf(format: string, ...args: unknown[]): void {
+  if (process.env.ROOM_DEBUG) console.error(`room-debug: ${format}`, ...args);
+}
+
 export function defineTurnTask(deps: CoordinatorDeps) {
-  const { rc, governor, maxDepth, maxAuto, excerptLimit, roomRef } = deps;
+  const { rc, governor, maxDepth, maxAuto, excerptLimit, roomRef, turnTimeoutMs, workspace } = deps;
 
   async function headIds(
     runtime: TaskRuntime<TurnInput, TurnCheckpoint, TurnResult, object>,
@@ -218,10 +228,133 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         { type: "input", content: ref.prompt, requestId: ref.requestId },
         ctx,
       );
-      const settledRec = await submission.wait(ctx);
+      // Per-activation deadline: a hung head must not stall the room. On
+      // timeout the submission is aborted and the activation is finalized as
+      // blocked, so the governor's blocked short-circuit returns to the
+      // operator.
+      let timedOut = false;
+      const timer: Promise<SettledSubmissionRecord> = new Promise((resolve) => {
+        const t = setTimeout(() => {
+          timedOut = true;
+          resolve({
+            status: "unanswered",
+            reason: "turn deadline exceeded",
+          } as SettledSubmissionRecord);
+        }, turnTimeoutMs);
+        t.unref();
+      });
+      const waitPromise = submission.wait(ctx);
+      const settledRec = await Promise.race([waitPromise, timer]);
+      void waitPromise.catch(() => {});
+      if (timedOut) await submission.abort(ctx).catch(() => {});
       cp = await finalize(runtime, ref, settledRec, mode, depth, parentsOf(ref), cp, ctx);
       cp = { ...cp, done: [...cp.done, ref.requestId] };
     }
+    return cp;
+  }
+
+  /** Git working-tree fingerprint, untracked content included: mutations by
+   * any tool (write tool or bash) become visible at turn boundaries. */
+  function workspaceFingerprint(): string {
+    let status = "";
+    try {
+      status = execFileSync("git", ["-C", workspace, "status", "--porcelain", "-b"], {
+        maxBuffer: 1 << 20,
+      }).toString();
+    } catch {
+      return "";
+    }
+    const h = createHash("sha256");
+    h.update(status);
+    // Untracked entries show as "??" regardless of content: hash the file, or
+    // every file of the directory (bounded), so appends inside untracked
+    // directories are visible too.
+    for (const line of status.split("\n")) {
+      if (!line.startsWith("?? ")) continue;
+      const name = line.slice(3).trim();
+      if (!name) continue;
+      const full = join(workspace, name);
+      try {
+        if (name.endsWith("/")) {
+          const stack = [full];
+          let visited = 0;
+          while (stack.length > 0 && visited < 64) {
+            const dir = stack.pop()!;
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+              if (entry.name === ".git" || visited >= 64) continue;
+              const child = join(dir, entry.name);
+              if (entry.isDirectory()) stack.push(child);
+              else {
+                visited++;
+                const content = readFileSync(child);
+                if (content.length <= 4 << 20) h.update(content);
+              }
+            }
+          }
+        } else {
+          const content = readFileSync(full);
+          if (content.length <= 4 << 20) h.update(content);
+        }
+      } catch {
+        /* unreadable: skip */
+      }
+    }
+    return h.digest("hex").slice(0, 16);
+  }
+
+  /** Changed paths since the last check (from git status). */
+  function changedPaths(): string[] {
+    let status = "";
+    try {
+      status = execFileSync("git", ["-C", workspace, "status", "--porcelain"], {
+        maxBuffer: 1 << 20,
+      }).toString();
+    } catch {
+      return [];
+    }
+    return status
+      .split("\n")
+      .filter((l) => l.length > 3)
+      .map((l) => l.slice(3).trim().replace(/\/$/, ""))
+      .filter((n) => n !== "")
+      .slice(0, 12);
+  }
+
+  /** After each settle: compare the workspace fingerprint and record a
+   * Mutation event when it changed, whatever tool caused the change. */
+  async function detectMutations<C extends TurnCheckpoint>(
+    runtime: TaskRuntime<TurnInput, TurnCheckpoint, TurnResult, object>,
+    author: string,
+    cp: C,
+    ctx: Context,
+  ): Promise<C> {
+    const fp = workspaceFingerprint();
+    const arb = await runtime.snapshot(ArbiterDoc, ctx);
+    debugf(
+      "detectMutations author=%s fp=%s stored=%s armed=%s",
+      author,
+      fp || "(empty)",
+      arb?.fingerprint?.slice(0, 8) ?? "(none)",
+      String(arb?.armed),
+    );
+    if (fp === "" || fp === arb?.fingerprint) return cp;
+    await runtime.commit(async (tx) => {
+      const d = await tx.doc(ArbiterDoc);
+      d.fingerprint = fp;
+      return undefined;
+    }, ctx);
+    const paths = changedPaths().join(", ");
+    await appendRoomEvent(
+      rc,
+      {
+        author,
+        kind: "mutation",
+        body: `workspace changed during ${author}'s turn${paths ? `: ${paths}` : ""}`,
+        visibility: "room",
+        depth: cp.depth,
+      },
+      ctx,
+    );
     return cp;
   }
 
@@ -261,11 +394,13 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         // from the same pre-turn snapshot shares one revision, so a
         // write landing after a peer's turn finished is still a lost
         // update. The gate lifts at the join.
+        const fingerprint = workspaceFingerprint();
         await runtime.commit(async (tx) => {
           const d = await tx.doc(ArbiterDoc);
           d.armed = true;
           d.holder = "";
           d.deniedOnce = {};
+          if (fingerprint) d.fingerprint = fingerprint;
           return undefined;
         }, ctx);
 
@@ -308,6 +443,7 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           cp,
           ctx,
         );
+        cp = await detectMutations(runtime, "fanout", cp, ctx);
 
         // Join: close the parallel window; react turns are
         // single-writer by construction (their prompts carry the
@@ -426,6 +562,7 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           cp,
           ctx,
         );
+        cp = await detectMutations(runtime, "react", cp, ctx);
         await runtime.commit(
           () => ({
             status: "running" as const,

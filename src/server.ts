@@ -169,6 +169,13 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
           json(res, 400, { error: "text is required" });
           return;
         }
+        // One operator turn at a time: a second fan-out during a live turn
+        // would break the arbiter's same-snapshot assumption.
+        const live = await app.rc.harness.inspect(BACKGROUND_CONTEXT);
+        if (live.tasks.some((t) => t.record.kind === "ettin.turn")) {
+          json(res, 409, { error: "the room is still working on the previous turn" });
+          return;
+        }
         const { eventId } = await app.say(body.text.trim(), body.targets ?? []);
         json(res, 200, { eventId });
         return;

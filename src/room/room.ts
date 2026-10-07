@@ -67,6 +67,8 @@ export type MutationRecord = { head: string; path: string; at: number };
 export type ArbiterState = {
   /** True during a parallel window (fan-out from one snapshot). */
   armed: boolean;
+  /** Last observed git working-tree fingerprint ("" until first check). */
+  fingerprint: string;
   /** Head currently holding the write gate ("" when none). */
   holder: string;
   /** Heads already denied once this window; their reconciled retry passes. */
@@ -83,6 +85,7 @@ export const ArbiterDoc = defineDoc<ArbiterState>({
   scope: "session",
   initial: () => ({
     armed: false,
+    fingerprint: "",
     holder: "",
     deniedOnce: {},
     revision: 0,

@@ -60,6 +60,10 @@ npm start          # http://localhost:7947
 Options: `--db ./data/ettin.sqlite --workspace /path/to/repo --port 7947
 --heads a,b --thinking off --max-depth 2 --max-auto 8`.
 
+Flags: `--turn-deadline 15m` (per-activation deadline; a hung head is
+aborted and the room returns to the operator), fresh workspaces are
+git-initialized (the mutation fingerprint's substrate).
+
 Governors: `--governor marker` (deterministic floor), `--governor jev` (official
 TypeSafe System One, key at `~/.secrets/jev.key`), or `--governor decisions`
 (a tabbyAPI `/v1/decisions` endpoint, default `http://localhost:8081/v1/decisions`,

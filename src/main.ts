@@ -9,7 +9,8 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { parseArgs } from "node:util";
-import { mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +27,7 @@ const { values } = parseArgs({
     "jev-key-file": { type: "string", default: "" },
     "decisions-url": { type: "string", default: "http://localhost:8081/v1/decisions" },
     "decisions-model": { type: "string", default: "" },
+    "turn-deadline": { type: "string", default: "15m" },
     db: { type: "string", default: "./data/ettin.sqlite" },
     workspace: { type: "string", default: "./workspace" },
     port: { type: "string", default: "7947" },
@@ -37,9 +39,27 @@ const { values } = parseArgs({
   },
 });
 
+function parseDuration(input: string): number {
+  const m = /^(\d+)(ms|s|m|h)?$/.exec(input.trim());
+  if (!m) throw new Error(`invalid duration: ${input}`);
+  const n = Number(m[1]);
+  const unit = m[2] ?? "ms";
+  return n * (unit === "s" ? 1000 : unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 1);
+}
+
 async function main(): Promise<void> {
   const dbPath = resolve(values.db!.replace(/^\.\//, `${process.cwd()}/`));
-  mkdirSync(resolve(values.workspace!), { recursive: true });
+  const ws = resolve(values.workspace!);
+  mkdirSync(ws, { recursive: true });
+  // A git repo is the mutation fingerprint's substrate; init fresh workspaces
+  // like the spike's harness did.
+  if (!existsSync(join(ws, ".git"))) {
+    try {
+      execFileSync("git", ["-C", ws, "init", "-q"], { stdio: "ignore" });
+    } catch {
+      /* fingerprinting degrades to tool-recorded mutations only */
+    }
+  }
   mkdirSync(dbPath.slice(0, dbPath.lastIndexOf("/")) || ".", { recursive: true });
 
   // Turn governor: marker (deterministic floor), official Jev, or a local
@@ -75,6 +95,7 @@ async function main(): Promise<void> {
     maxAuto: Number(values["max-auto"]),
     excerptLimit: Number(values.excerpt),
     governor,
+    turnTimeoutMs: parseDuration(values["turn-deadline"]!),
     roomRef: "room_log tool (the shared room record)",
   });
   await app.open();

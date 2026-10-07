@@ -89,6 +89,42 @@ body {
   flex: 1;
 }
 
+#add-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#add-head input,
+#add-head select {
+  background: var(--bg-inset);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+#add-head select {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+#add-head button {
+  background: var(--bg-inset);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#add-head button:hover {
+  color: var(--text);
+  border-color: #39405a;
+}
+
 #head-list {
   list-style: none;
   margin: 0;

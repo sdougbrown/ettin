@@ -412,6 +412,68 @@ function connect() {
   });
 }
 
+/* ---------- add head ---------- */
+
+async function populateModels() {
+  try {
+    const res = await fetch("/api/models");
+    const body = await res.json();
+    const select = document.getElementById("new-head-model");
+    select.innerHTML = "";
+    for (const m of body.models) {
+      const opt = document.createElement("option");
+      opt.value = `${m.provider}/${m.modelId}`;
+      opt.textContent = `${m.modelId}`;
+      select.appendChild(opt);
+    }
+  } catch {
+    /* models endpoint unavailable; leave the selector empty */
+  }
+}
+
+function renderHeadCard(h) {
+  colorFor(h.name);
+  const rec = heads.get(h.name);
+  rec.model = h.model;
+  rec.provider = h.provider;
+  const li = document.createElement("li");
+  li.className = "head-card";
+  li.dataset.head = h.name;
+  li.style.setProperty("--head-color", rec.color);
+  li.innerHTML =
+    `<span class="head-name">${esc(h.name)}</span>` +
+    `<span class="head-model">${esc(h.provider)}/${esc(h.model)}</span>` +
+    `<span class="head-status"><span class="dot"></span>idle</span>`;
+  headListEl.appendChild(li);
+  renderTargets();
+}
+
+document.getElementById("add-head").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const nameEl = document.getElementById("new-head-name");
+  const modelEl = document.getElementById("new-head-model");
+  const name = nameEl.value.trim().toLowerCase();
+  if (!name) return;
+  const btn = e.target.querySelector("button");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/heads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, model: modelEl.value }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      alert(`ettin: ${body.error ?? res.status}`);
+      return;
+    }
+    renderHeadCard(body.head);
+    nameEl.value = "";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ---------- boot ---------- */
 
 async function boot() {
@@ -422,6 +484,7 @@ async function boot() {
   const models = await (await fetch("/api/models")).json();
   document.getElementById("model-source").textContent =
     `${models.kind}: ${models.models.map((m) => m.modelId).join(", ")}`;
+  await populateModels();
   for (const ev of state.events) renderEvent(ev);
   if (!state.events.length) {
     transcriptEl.innerHTML =
