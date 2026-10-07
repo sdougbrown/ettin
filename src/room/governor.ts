@@ -4,8 +4,12 @@
  * The coordinator owns all enforcement (budget, depth cap, no echo); a
  * governor only chooses who reacts next within that envelope. The marker
  * governor is the deterministic stub: a peer round happens only when a
- * settled output carries an ask-peer marker. Jev slots in behind the same
+ * settled output carries a room marker. Jev slots in behind the same
  * interface later.
+ *
+ * Room markers follow avenor's whole-line marker convention (the team run's
+ * `<|team: skip | name|>` shape): `<|room: verb | arg|>`, matched whole-line
+ * and case-insensitively, so markers embedded in prose are ignored.
  */
 import type { RoomEvent } from "./room.ts";
 
@@ -43,10 +47,39 @@ export interface Governor {
   decide(state: State): Decision;
 }
 
-/** Deterministic signals a head can emit to request a peer round. The
- * orientation header teaches the convention; keep it in sync with
- * orientationText(). */
-export const ASK_PEER_MARKERS = ["[[ask-peer]]", "[[request-review]]"];
+const MARKER_LINE = /^<\|room:\s*([a-z-]+)\s*(?:\|\s*([^|>]*?)\s*)?\|>$/i;
+
+/** One whole-line room marker: verb plus optional argument. */
+export interface RoomMarker {
+  verb: string; // lowercased, e.g. "ask-peer"
+  arg: string; // trimmed argument; "" when absent
+}
+
+/** Parse the first room marker in an output. Only whole-line markers count —
+ * a marker embedded in prose is ignored, as in avenor's team runner. */
+export function parseRoomMarker(out: string): RoomMarker | undefined {
+  for (const rawLine of out.split("\n")) {
+    const line = rawLine.trim();
+    const m = MARKER_LINE.exec(line);
+    if (m) return { verb: (m[1] ?? "").toLowerCase(), arg: (m[2] ?? "").trim() };
+  }
+  return undefined;
+}
+
+export function hasAskMarker(out: string): boolean {
+  const m = parseRoomMarker(out);
+  return m !== undefined && m.verb === "ask-peer";
+}
+
+/** Resolve a marker's target list: a named head, "all", or absent (all). */
+function markerTargets(m: RoomMarker, participants: string[], speaker: string): string[] {
+  const wanted =
+    m.arg === "" || m.arg.toLowerCase() === "all"
+      ? participants
+      : participants.filter((p) => p.toLowerCase() === m.arg.toLowerCase());
+  // The speaker never reacts to their own output (no-echo rule).
+  return wanted.filter((p) => p !== speaker);
+}
 
 export class MarkerGovernor implements Governor {
   decide(s: State): Decision {
@@ -60,37 +93,23 @@ export class MarkerGovernor implements Governor {
     for (let i = s.settled.length - 1; i >= 0; i--) {
       const a = s.settled[i]!;
       if (s.reactedTo.has(a.eventId)) continue;
-      if (hasAskMarker(a.finalOutput)) {
-        return {
-          activate: others(s, a.participant),
-          speakerEventId: a.eventId,
-          mode: "react",
-          reason: `ask-peer marker in ${a.eventId}`,
-        };
-      }
+      const marker = parseRoomMarker(a.finalOutput);
+      if (!marker || marker.verb !== "ask-peer") continue;
+      const targets = markerTargets(marker, s.participants, a.participant);
+      if (targets.length === 0) continue;
+      const scope =
+        marker.arg === "" || marker.arg.toLowerCase() === "all"
+          ? "all peers"
+          : `→ ${targets.join(",")}`;
+      return {
+        activate: targets,
+        speakerEventId: a.eventId,
+        mode: "react",
+        reason: `ask-peer marker in ${a.eventId} (${scope})`,
+      };
     }
     return { activate: [], speakerEventId: "", mode: "", reason: "no peer request" };
   }
-}
-
-export function hasAskMarker(out: string): boolean {
-  const l = out.toLowerCase();
-  return ASK_PEER_MARKERS.some((m) => l.includes(m));
-}
-
-function others(s: State, speaker: string): string[] {
-  // Prefer the room roster so a head can wake a peer that has not spoken
-  // this turn yet; fall back to settled participants.
-  const source = s.participants.length > 0 ? s.participants : s.settled.map((a) => a.participant);
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const p of source) {
-    if (p !== speaker && !seen.has(p)) {
-      seen.add(p);
-      out.push(p);
-    }
-  }
-  return out;
 }
 
 /** Marker in a raw room event body (used when reconstructing state). */

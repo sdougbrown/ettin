@@ -54,13 +54,16 @@ function scriptedFaux(
 
 const headA = scriptedFaux("faux-head-a", [
   "head a ready.", // bootstrap
-  "Proposal: gate by token bucket. [[ask-peer]]", // fan-out answer
-  "Ack, proceeding.", // second turn
+  "Proposal: gate by token bucket.\n<|room: ask-peer|>", // fan-out answer: all peers
+  "Confirmed.\n<|room: ask-peer | a|>", // turn 2: self-target, filtered by no-echo
+  "Standing by.", // turn 3: no marker
 ]);
 const headB = scriptedFaux("faux-head-b", [
   "head b ready.", // bootstrap
   "Peer A's bucket undercounts bursts; counterproposal: leaky bucket.", // react
-  "Ack, aligned.", // second turn
+  "Aligned, nothing to add.", // turn 1 react
+  "This is aligned <|room: ask-peer|> inline. // turn 2: embedded in prose — ignored",
+  "Confirmed, done.", // turn 3: no marker anywhere,
 ]);
 
 const models = createModels();
@@ -126,7 +129,7 @@ if (bFanout.parents?.[0] !== human.id) throw new Error(`b fan-out parent should 
 if (!bReact.parents?.includes(aFanout.id))
   throw new Error(`b react should reference a's output ${aFanout.id}`);
 if (bReact.depth !== 1) throw new Error(`b react depth should be 1, got ${bReact.depth}`);
-if (!aFanout.body.includes("[[ask-peer]]")) throw new Error("a's output lost its marker");
+if (!aFanout.body.includes("<|room: ask-peer|>")) throw new Error("a's output lost its marker");
 
 const governorEvents = events.filter((e) => e.kind === "governor");
 if (!governorEvents.some((e) => e.body.includes("ask-peer marker"))) {
@@ -138,31 +141,47 @@ if (!governorEvents.some((e) => e.body.includes("return to human"))) {
   throw new Error("governor should have ended the turn back to the operator");
 }
 
-// Second turn: both answers carry no marker; the room returns to the operator.
-headA.handle.appendResponses([fauxAssistantMessage([fauxText("Ack, proceeding.")])]);
-headB.handle.appendResponses([fauxAssistantMessage([fauxText("Ack, aligned.")])]);
-await app.say("Both of you: just confirm and stop.");
-for (let i = 0; i < 200; i++) {
-  await new Promise((r) => setTimeout(r, 100));
-  const evs = await app.events();
-  const govs = evs.filter((e) => e.kind === "governor" && e.body.includes("return to human"));
-  if (govs.length >= 2) break;
+// Wait until a turn's governor logs its final decision.
+async function waitForReturnToHuman(): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const evs = await app.events();
+    const returns = evs.filter((e) => e.kind === "governor" && e.body.includes("return to human"));
+    if (returns.length >= turn) return;
+  }
+  throw new Error(`turn ${turn}: governor never returned to the operator`);
 }
-const events2 = await app.events();
-const lastSeq = events[events.length - 1]?.seq ?? 0;
-const secondTurn = events2.filter((e) => e.seq > lastSeq);
-if (!secondTurn.some((e) => e.kind === "governor" && e.body.includes("no peer request"))) {
+
+let turn = 2;
+// Turn 2: a emits a marker naming itself; the no-echo rule filters the
+// target out, so the turn returns to the operator without a react round.
+await app.say("a: confirm your position.");
+await waitForReturnToHuman();
+
+turn = 3;
+// Turn 3: b embeds a marker inside prose — whole-line matching ignores it.
+await app.say("b: confirm your position.");
+await waitForReturnToHuman();
+
+const all = await app.events();
+const lastSeq = all.findIndex((e) => e.id === "human2") - 1;
+const turns23 = all.filter((e) => e.seq > (lastSeq >= 0 ? all[lastSeq]!.seq : 0));
+const reasons = turns23.filter((e) => e.kind === "governor").map((e) => e.body);
+const noPeerRequests = reasons.filter((r) => r.includes("no peer request"));
+if (noPeerRequests.length !== 2) {
   throw new Error(
-    `second turn should end with 'no peer request'; got:\n` +
-      secondTurn.map((e) => `[${e.id}] ${e.kind}: ${e.body.slice(0, 90)}`).join("\n"),
+    `turns 2 and 3 should each end with 'no peer request'; got:\n${reasons.join("\n")}`,
   );
 }
+// No react activations may appear after turn 1.
+const lateReacts = turns23.filter((e) => e.kind === "head_output" && e.meta?.mode === "react");
+if (lateReacts.length > 0) throw new Error("turns 2/3 must not produce react rounds");
 
 console.log("SMOKE OK");
 console.log("room log:");
-for (const e of events2) {
+for (const e of all) {
   console.log(
-    `  [${e.id}] ${e.kind}${e.meta?.mode ? `/${e.meta.mode}` : ""}${e.depth ? ` d${e.depth}` : ""}: ${e.body.slice(0, 90)}`,
+    `  [${e.id}] ${e.kind}${e.meta?.mode ? `/${e.meta.mode}` : ""}${e.depth ? ` d${e.depth}` : ""}: ${e.body.replaceAll("\n", " / ").slice(0, 90)}`,
   );
 }
 await app.close();

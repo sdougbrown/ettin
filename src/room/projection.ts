@@ -22,13 +22,16 @@ const PEER_POLICY_LINE =
   "changes your position; otherwise continue your own work and say so.";
 
 /** Stable header injected on every prompt. Also teaches the marker
- * convention the deterministic governor listens for — keep the markers in
- * sync with ASK_PEER_MARKERS. */
+ * convention the deterministic governor listens for (see parseRoomMarker in
+ * governor.ts) — keep the syntax in sync. */
 export function orientationText(self: string, peers: string[], roomRef: string): string {
   return (
     `You are head "${self}" in a shared room with the operator and peer head(s): ${peers.join(", ")}.\n` +
     `The operator sees everything you produce. The full room record is available via the room_log tool (${roomRef}).\n` +
-    "If you want the peer head(s) to weigh in, end your reply with [[ask-peer]] or [[request-review]]."
+    "To ask the peer head(s) to weigh in, end your reply with a marker on its own line:\n" +
+    "  <|room: ask-peer | all|>        every peer reacts (or omit the argument: <|room: ask-peer|>)\n" +
+    "  <|room: ask-peer | b|>          only head b reacts (name one head)\n" +
+    "The room activates the peer(s) you name; the operator may always override."
   );
 }
 
