@@ -2,7 +2,7 @@
   "name": "ettin-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Ettin \u2014 a two-headed room for persistent coding agents, over pi-durable.",
+  "description": "Ettin — a two-headed room for persistent coding agents, over pi-durable.",
   "type": "module",
   "scripts": {
     "start": "tsx src/main.ts",
@@ -21,6 +21,7 @@
     "@types/node": "^22.0.0",
     "oxfmt": "^0.72.0",
     "oxlint": "^1.87.0",
+    "playwright-core": "^1.63.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }

@@ -272,6 +272,16 @@ body {
 }
 
 /* operator */
+.msg.human .meta {
+  justify-content: flex-end;
+  margin-bottom: 3px;
+}
+
+.msg.human .badge.route {
+  color: var(--accent);
+  border-color: #4a4020;
+}
+
 .msg.human {
   align-self: flex-end;
   background: linear-gradient(160deg, #2b2517, #221d10);

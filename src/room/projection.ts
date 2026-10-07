@@ -95,12 +95,17 @@ export function fanoutPrompt(input: {
   roomRef: string;
   excerptLimit: number;
   mutationNotice?: string;
+  /** True when the operator @-targeted a subset and this head is in it. */
+  addressedDirectly?: boolean;
 }): string {
   const { events, self, participants, humanEvent, roomRef, excerptLimit } = input;
   const parts: string[] = [orientationText(self, peerNames(participants, self), roomRef)];
   const ctx = contextFor(events, self, excerptLimit);
   parts.push("\nRoom context since your last turn:");
   parts.push(ctx.length === 0 ? "(nothing new)" : ctx.map((l) => `- ${l}`).join("\n"));
+  if (input.addressedDirectly) {
+    parts.push("\nThe operator addressed this message specifically to you.");
+  }
   if (input.mutationNotice) parts.push(`\n${input.mutationNotice}`);
   parts.push("\nThe operator says:");
   parts.push(humanEvent.body);

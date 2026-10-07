@@ -292,6 +292,7 @@ export function defineTurnTask(deps: CoordinatorDeps) {
                 roomRef,
                 excerptLimit,
                 mutationNotice: notice,
+                addressedDirectly: task.input.targets.length < names.length,
               }),
             })),
           };

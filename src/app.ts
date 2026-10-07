@@ -118,6 +118,7 @@ export class EttinApp {
         body: text,
         visibility: "room",
         depth: 0,
+        meta: { targets: headNames.join(",") },
       };
       await tx.appendEntry(RoomEventEntry, rc.room.id, { data: event });
       const task = await tx.createTask(

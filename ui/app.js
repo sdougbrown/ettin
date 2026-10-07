@@ -43,7 +43,13 @@ function renderEvent(ev) {
       const el = document.createElement("div");
       el.className = "msg human";
       el.dataset.eventId = ev.id;
-      el.textContent = ev.body;
+      const targets = (ev.meta?.targets ?? "").split(",").filter(Boolean);
+      const meta =
+        heads.size > 0 && targets.length > 0 && targets.length < heads.size
+          ? `<span class="badge route">→ ${targets.map(esc).join(", ")}</span>`
+          : "";
+      el.innerHTML =
+        (meta ? `<div class="meta">${meta}</div>` : "") + `<div class="body">${esc(ev.body)}</div>`;
       transcriptEl.appendChild(el);
       break;
     }
@@ -209,17 +215,18 @@ function renderTargets() {
 /* ---------- composer ---------- */
 
 function parseTargets(text) {
+  // Any @name in the message routes to that head — leading or mid-sentence
+  // ("What does @a think?" asks a). Unknown names are ignored; the text is
+  // kept verbatim either way.
   const names = [...heads.keys()];
-  let rest = text;
   const targets = [];
-  while (rest.startsWith("@")) {
-    const space = rest.indexOf(" ");
-    const token = space === -1 ? rest.slice(1) : rest.slice(1, space);
-    if (!names.includes(token)) break;
-    targets.push(token);
-    rest = rest.slice(space === -1 ? rest.length : space).trimStart();
+  const re = /(?:^|[\s(])@([a-zA-Z][\w-]*)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const name = names.find((n) => n.toLowerCase() === m[1].toLowerCase());
+    if (name && !targets.includes(name)) targets.push(name);
   }
-  return { text: rest, targets };
+  return { text, targets };
 }
 
 async function send() {
@@ -257,12 +264,10 @@ inputEl.addEventListener("keydown", (e) => {
 inputEl.addEventListener("input", () => {
   // Preview @target chips while typing.
   const { targets } = parseTargets(inputEl.value);
-  if (targets.length) {
+  const next = new Set(targets);
+  if (next.size !== targetSet.size || ![...next].every((t) => targetSet.has(t))) {
     targetSet.clear();
     for (const t of targets) targetSet.add(t);
-    renderTargets();
-  } else if (targetSet.size && !inputEl.value.startsWith("@")) {
-    targetSet.clear();
     renderTargets();
   }
 });
