@@ -14,6 +14,7 @@ const PALETTE = [
 const heads = new Map(); // name -> {name, model, provider, color}
 const live = new Map(); // name -> {el, text, tools: Map(callId -> chip)}
 const targetSet = new Set();
+const mention = { open: false, start: -1, items: [], index: 0 };
 
 const transcriptEl = document.getElementById("transcript");
 const headListEl = document.getElementById("head-list");
@@ -235,6 +236,7 @@ async function send() {
   const { text, targets } = parseTargets(raw);
   if (!text) return;
   sendEl.disabled = true;
+  closeMention();
   try {
     const res = await fetch("/api/say", {
       method: "POST",
@@ -255,12 +257,6 @@ async function send() {
 }
 
 sendEl.addEventListener("click", send);
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    send();
-  }
-});
 inputEl.addEventListener("input", () => {
   // Preview @target chips while typing.
   const { targets } = parseTargets(inputEl.value);
@@ -277,6 +273,111 @@ function autoGrow() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
 }
 inputEl.addEventListener("input", autoGrow);
+
+/* ---------- @-mention autocomplete ---------- */
+
+const mentionBox = document.createElement("div");
+mentionBox.id = "mentions";
+mentionBox.hidden = true;
+document.querySelector("#composer").prepend(mentionBox);
+
+function mentionScan() {
+  // The @token the caret sits in, e.g. "@b" or a partial name after "@".
+  const pos = inputEl.selectionStart ?? 0;
+  const before = inputEl.value.slice(0, pos);
+  const match = /(?:^|\s)@([a-zA-Z]*)$/.exec(before);
+  if (!match || heads.size === 0) {
+    closeMention();
+    return;
+  }
+  const typed = match[1].toLowerCase();
+  const items = [...heads.keys()].filter((n) => n.toLowerCase().startsWith(typed));
+  if (items.length === 0) {
+    closeMention();
+    return;
+  }
+  mention.open = true;
+  mention.start = pos - match[1].length - 1; // index of the "@"
+  mention.items = items;
+  mention.index = 0;
+  renderMention();
+}
+
+function renderMention() {
+  mentionBox.innerHTML = "";
+  for (let i = 0; i < mention.items.length; i++) {
+    const name = mention.items[i];
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "mention-item" + (i === mention.index ? " active" : "");
+    item.style.setProperty("--head-color", colorFor(name));
+    item.innerHTML =
+      `<span class="mention-dot"></span>@${esc(name)}` +
+      `<span class="mention-model">${esc(heads.get(name)?.model ?? "")}</span>`;
+    item.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // keep focus in the textarea
+      pickMention(name);
+    });
+    mentionBox.appendChild(item);
+  }
+  mentionBox.hidden = false;
+}
+
+function closeMention() {
+  mention.open = false;
+  mention.items = [];
+  mentionBox.hidden = true;
+}
+
+function pickMention(name) {
+  const pos = inputEl.selectionStart ?? inputEl.value.length;
+  inputEl.value = inputEl.value.slice(0, mention.start) + `@${name} ` + inputEl.value.slice(pos);
+  closeMention();
+  inputEl.focus();
+  const caret = mention.start + name.length + 2;
+  inputEl.setSelectionRange(caret, caret);
+  renderTargets();
+}
+
+// Keyboard: arrows + Tab pick, Esc dismisses; without the popup, Enter sends.
+inputEl.addEventListener("keydown", (e) => {
+  if (mention.open) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      mention.index = (mention.index + 1) % mention.items.length;
+      renderMention();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      mention.index = (mention.index - 1 + mention.items.length) % mention.items.length;
+      renderMention();
+      return;
+    }
+    if (e.key === "Tab" || (e.key === "Enter" && mention.items.length === 1)) {
+      e.preventDefault();
+      pickMention(mention.items[mention.index]);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeMention();
+      return;
+    }
+  }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+inputEl.addEventListener("keyup", (e) => {
+  if (["ArrowDown", "ArrowUp", "Escape", "Enter", "Tab"].includes(e.key)) return;
+  mentionScan();
+});
+inputEl.addEventListener("click", mentionScan);
+document.addEventListener("click", (e) => {
+  if (!mentionBox.contains(e.target) && e.target !== inputEl) closeMention();
+});
 
 /* ---------- SSE ---------- */
 

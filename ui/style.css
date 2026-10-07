@@ -411,6 +411,61 @@ body {
   border-color: #4d3f1c;
 }
 
+/* ---------- @-mention popup ---------- */
+
+#mentions[hidden] {
+  display: none;
+}
+
+#mentions {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  overflow: hidden;
+  margin-bottom: 2px;
+  max-width: 320px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.mention-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  border-left: 3px solid transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.mention-item.active {
+  background: var(--bg-inset);
+  border-left-color: var(--head-color, var(--accent));
+}
+
+.mention-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--head-color, var(--accent));
+  align-self: center;
+  flex: none;
+}
+
+.mention-model {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 /* ---------- composer ---------- */
 
 #composer {
