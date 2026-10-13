@@ -35,49 +35,29 @@ interface ModelsJsonFile {
   >;
 }
 
+function toModel(providerId: string, baseUrl: string) {
+  return (m: Record<string, unknown>): Model<"openai-completions"> => ({
+    id: String(m.id),
+    name: String(m.name ?? m.id),
+    api: "openai-completions" as const,
+    provider: providerId,
+    baseUrl,
+    input: (m.input as ("text" | "image")[] | undefined) ?? ["text"],
+    cost: zeroCost(),
+    reasoning: Boolean(m.reasoning),
+    thinkingLevelMap: m.thinkingLevelMap as Model<"openai-completions">["thinkingLevelMap"],
+    contextWindow: Number(m.contextWindow ?? 128_000),
+    maxTokens: Number(m.maxTokens ?? 16_384),
+    compat: m.compat as Model<"openai-completions">["compat"],
+  });
+}
+
 function zeroCost() {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
-/** Build the sparky provider from the shared models.json config. */
-function sparkyProvider(configPath: string) {
-  const raw = JSON.parse(readFileSync(configPath, "utf8")) as ModelsJsonFile;
-  const cfg = raw.providers?.sparky;
-  if (!cfg?.baseUrl) throw new Error(`no sparky provider in ${configPath}`);
-  const models: Model<"openai-completions">[] = (cfg.models ?? [])
-    .filter((m) => m.type === undefined || m.type === "chat")
-    .map((m) => ({
-      id: String(m.id),
-      name: String(m.name ?? m.id),
-      api: "openai-completions" as const,
-      provider: "sparky",
-      baseUrl: cfg.baseUrl!,
-      input: (m.input as ("text" | "image")[] | undefined) ?? ["text"],
-      cost: zeroCost(),
-      reasoning: Boolean(m.reasoning),
-      thinkingLevelMap: m.thinkingLevelMap as Model<"openai-completions">["thinkingLevelMap"],
-      contextWindow: Number(m.contextWindow ?? 128_000),
-      maxTokens: Number(m.maxTokens ?? 16_384),
-      compat: m.compat as Model<"openai-completions">["compat"],
-    }));
-  const auth = {
-    apiKey: {
-      name: "Sparky API key",
-      resolve: async () => ({ auth: { apiKey: cfg.apiKey ?? "dummy" }, source: "models.json" }),
-    },
-  };
-  return createProvider<"openai-completions">({
-    id: "sparky",
-    name: "Sparky (LiteLLM)",
-    baseUrl: cfg.baseUrl,
-    auth,
-    models,
-    api: openAICompletionsApi(),
-  });
-}
-
 export type ModelSource =
-  | { kind: "sparky"; models: Models; choices: HeadModelChoice[] }
+  | { kind: "config"; models: Models; choices: HeadModelChoice[] }
   | { kind: "faux"; models: Models; choices: HeadModelChoice[]; faux: FauxProviderHandle };
 /** sparky models from models.json, or the faux provider when unavailable
  * (or forced with `prefer: "faux"` for offline tests). */
@@ -85,24 +65,55 @@ export function loadModels(
   opts: {
     configPath?: string;
     allowFauxFallback?: boolean;
-    prefer?: "sparky" | "faux";
+    prefer?: "config" | "faux";
   } = {},
 ): ModelSource {
   if (opts.prefer === "faux" && opts.allowFauxFallback) return fauxSource();
   const configPath = opts.configPath ?? join(homedir(), ".pi", "agent", "models.json");
   try {
-    const sparky = sparkyProvider(configPath);
+    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as ModelsJsonFile;
     const models = createModels();
-    models.setProvider(sparky);
-    const raw = JSON.parse(readFileSync(configPath, "utf8")) as ModelsJsonFile;
-    const choices = (raw.providers?.sparky?.models ?? [])
-      .filter((m) => m.type === undefined || m.type === "chat")
-      .map((m) => ({
-        provider: "sparky",
-        modelId: String(m.id),
-        label: String(m.name ?? m.id),
-      }));
-    return { kind: "sparky", models, choices };
+    const choices: HeadModelChoice[] = [];
+    for (const [id, cfg] of Object.entries(parsed.providers ?? {})) {
+      if (!cfg?.baseUrl) continue;
+      if (cfg.api !== undefined && cfg.api !== "openai-completions") {
+        console.warn(
+          `ettin: provider ${id} uses api=${cfg.api}; skipping (openai-completions only)`,
+        );
+        continue;
+      }
+      const chatModels = (cfg.models ?? []).filter(
+        (m) => m.type === undefined || m.type === "chat",
+      );
+      if (chatModels.length === 0) continue;
+      models.setProvider(
+        createProvider<"openai-completions">({
+          id,
+          name: id,
+          baseUrl: cfg.baseUrl,
+          auth: {
+            apiKey: {
+              name: `${id} API key`,
+              resolve: async () => ({
+                auth: { apiKey: cfg.apiKey ?? "dummy" },
+                source: "models.json",
+              }),
+            },
+          },
+          models: chatModels.map(toModel(id, cfg.baseUrl)),
+          api: openAICompletionsApi(),
+        }),
+      );
+      choices.push(
+        ...chatModels.map((m) => ({
+          provider: id,
+          modelId: String(m.id),
+          label: `${id}/${String(m.id)}`,
+        })),
+      );
+    }
+    if (choices.length === 0) throw new Error(`no openai-completions models in ${configPath}`);
+    return { kind: "config", models, choices };
   } catch (err) {
     if (!opts.allowFauxFallback) throw err;
     return fauxSource();

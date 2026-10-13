@@ -30,7 +30,7 @@ import { HeadManager } from "./heads.ts";
 import { loadModels, type ModelSource } from "./models.ts";
 
 export interface AppOptions {
-  prefer?: "sparky" | "faux";
+  prefer?: "config" | "faux";
   governor?: Governor;
   /** Per-activation deadline; 0 uses the 15-minute default. */
   turnTimeoutMs?: number;
