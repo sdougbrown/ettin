@@ -260,6 +260,20 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
         json(res, 200, { ok: true });
         return;
       }
+      if (url.pathname === "/api/heads" && req.method === "DELETE") {
+        const name = url.searchParams.get("name")?.trim().toLowerCase() ?? "";
+        if (!name) {
+          json(res, 400, { error: "name query param required" });
+          return;
+        }
+        const removed = await app.removeHead(name);
+        if (!removed) {
+          json(res, 404, { error: `no head named ${name}` });
+          return;
+        }
+        json(res, 200, { ok: true });
+        return;
+      }
       if (url.pathname === "/api/heads" && req.method === "POST") {
         const body = JSON.parse((await readBody(req)) || "{}") as { name?: string; model?: string };
         if (!body.name?.trim()) {

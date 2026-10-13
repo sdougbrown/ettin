@@ -132,6 +132,28 @@ export class HeadManager {
     return [...this.roster.byName.values()].toSorted((a, b) => a.name.localeCompare(b.name));
   }
 
+  /** Remove a head from the room. Its conversation stays in storage, but it
+   * leaves the roster and future turns. */
+  async removeHead(name: string, ctx: Context): Promise<boolean> {
+    const record = this.roster.byName.get(name);
+    if (!record) return false;
+    this.roster.byName.delete(name);
+    this.roster.nameOf.delete(record.conversationId);
+    await this.saveRoster(ctx);
+    await appendRoomEvent(
+      this.rc,
+      {
+        author: "room",
+        kind: "system",
+        body: `head ${name} left the room`,
+        visibility: "room",
+        depth: 0,
+      },
+      ctx,
+    );
+    return true;
+  }
+
   /** Create a head (or reattach) and run its bootstrap orientation turn. */
   async ensureHead(
     name: string,

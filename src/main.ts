@@ -129,6 +129,11 @@ async function main(): Promise<void> {
       .map((h) => `${h.name}=${h.provider}/${h.model}`)
       .join(", ")}`,
   );
+  if (app.models.kind === "faux") {
+    console.warn(
+      "ettin: running on the scripted faux provider — real heads cannot work. Check ~/.pi/agent/models.json.",
+    );
+  }
   void BACKGROUND_CONTEXT;
 }
 

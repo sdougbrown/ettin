@@ -180,18 +180,7 @@ function clearLive(head) {
 function renderHeads(list) {
   headListEl.innerHTML = "";
   for (const h of list) {
-    colorFor(h.name);
-    heads.get(h.name).model = h.model;
-    heads.get(h.name).provider = h.provider;
-    const li = document.createElement("li");
-    li.className = "head-card";
-    li.dataset.head = h.name;
-    li.style.setProperty("--head-color", heads.get(h.name).color);
-    li.innerHTML =
-      `<span class="head-name">${esc(h.name)}</span>` +
-      `<span class="head-model">${esc(h.provider)}/${esc(h.model)}</span>` +
-      `<span class="head-status"><span class="dot"></span>idle</span>`;
-    headListEl.appendChild(li);
+    renderHeadCard(h);
   }
   renderTargets();
 }
@@ -530,12 +519,31 @@ function renderHeadCard(h) {
   li.dataset.head = h.name;
   li.style.setProperty("--head-color", rec.color);
   li.innerHTML =
+    `<button class="head-remove" title="Remove ${esc(h.name)} from the room" data-name="${esc(h.name)}">×</button>` +
     `<span class="head-name">${esc(h.name)}</span>` +
     `<span class="head-model">${esc(h.provider)}/${esc(h.model)}</span>` +
     `<span class="head-status"><span class="dot"></span>idle</span>`;
   headListEl.appendChild(li);
-  renderTargets();
 }
+
+headListEl.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".head-remove");
+  if (!btn) return;
+  const name = btn.dataset.name;
+  if (!confirm(`Remove head "${name}" from the room?`)) return;
+  btn.disabled = true;
+  const res = await fetch(`/api/heads?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (res.ok) {
+    const card = headListEl.querySelector(`.head-card[data-head="${name}"]`);
+    card?.remove();
+    heads.delete(name);
+    renderTargets();
+  } else {
+    btn.disabled = false;
+    const body = await res.json().catch(() => ({}));
+    alert(`ettin: ${body.error ?? res.status}`);
+  }
+});
 
 document.getElementById("add-head").addEventListener("submit", async (e) => {
   e.preventDefault();

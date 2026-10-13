@@ -149,6 +149,10 @@ export class EttinApp {
     return roomEvents(this.rc, ctx);
   }
 
+  async removeHead(name: string, ctx: Context = BACKGROUND_CONTEXT): Promise<boolean> {
+    return this.heads.removeHead(name, ctx);
+  }
+
   async addHead(
     name: string,
     model?: string,

@@ -156,6 +156,23 @@ body {
   background: var(--head-color, var(--accent));
 }
 
+.head-card .head-remove {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.head-card .head-remove:hover {
+  color: var(--err);
+}
+
 .head-card .head-name {
   font-weight: 600;
   font-size: 13px;

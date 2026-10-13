@@ -13,7 +13,7 @@ import { createModels, createProvider, type Models } from "@earendil-works/pi-ai
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { Model } from "@earendil-works/pi-ai";
 import { fauxProvider, type FauxProviderHandle } from "@earendil-works/pi-ai/providers/faux";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -68,8 +68,15 @@ export function loadModels(
     prefer?: "config" | "faux";
   } = {},
 ): ModelSource {
-  if (opts.prefer === "faux" && opts.allowFauxFallback) return fauxSource();
   const configPath = opts.configPath ?? join(homedir(), ".pi", "agent", "models.json");
+  if (opts.prefer === "faux" && opts.allowFauxFallback) return fauxSource();
+  // A missing config may mean offline dev: fall back to the scripted faux
+  // provider. A broken config is a startup error — silently running a room
+  // of faux heads is worse than failing loudly.
+  if (!existsSync(configPath)) {
+    if (opts.allowFauxFallback) return fauxSource();
+    throw new Error(`models config not found: ${configPath}`);
+  }
   try {
     const parsed = JSON.parse(readFileSync(configPath, "utf8")) as ModelsJsonFile;
     const models = createModels();
@@ -115,8 +122,10 @@ export function loadModels(
     if (choices.length === 0) throw new Error(`no openai-completions models in ${configPath}`);
     return { kind: "config", models, choices };
   } catch (err) {
-    if (!opts.allowFauxFallback) throw err;
-    return fauxSource();
+    throw new Error(
+      `failed to load models from ${configPath}: ${err instanceof Error ? err.message : err}`,
+      { cause: err },
+    );
   }
 }
 
