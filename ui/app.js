@@ -38,10 +38,11 @@ function esc(s) {
 const ROOM_MARKER = /^<\|room:\s*([a-z-]+)\s*(?:\|\s*([^|>]*?)\s*)?\|>$/i;
 const LONE_MENTION = /^@([a-zA-Z][\w-]*)\??$/;
 
-function markerBadge(verb, arg, via) {
+function markerBadge(verb, arg, via, count = 0) {
   const target = arg === "" || arg.toLowerCase() === "all" ? "all peers" : `@${esc(arg)}`;
   const labels = { "ask-peer": `↪ asked ${target}` };
-  return `<span class="marker-badge" data-verb="${esc(verb)}" data-via="${esc(via)}">${labels[verb] ?? esc(verb)}</span>`;
+  const suffix = count > 0 ? ` <span class="badge-count">+${count}</span>` : "";
+  return `<span class="marker-badge" data-verb="${esc(verb)}" data-via="${esc(via)}">${labels[verb] ?? esc(verb)}${suffix}</span>`;
 }
 
 /** Pull whole-line room markers and resolving lone-line mentions out of a
@@ -52,7 +53,7 @@ function bodyWithBadges(body, self, final = true) {
   const lines = String(body).split("\n");
   const known = [...heads.keys()].map((n) => n.toLowerCase());
   const kept = [];
-  const badges = [];
+  const badges = []; // {verb, arg, via} — data, not rendered HTML
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const last = i === lines.length - 1;
@@ -64,12 +65,12 @@ function bodyWithBadges(body, self, final = true) {
     if (men && (final || !last)) {
       const name = men[1].toLowerCase();
       if (name === "all" || name === "room" || known.includes(name)) {
-        badges.push(markerBadge("ask-peer", men[1], "mention"));
+        badges.push({ verb: "ask-peer", arg: men[1], via: "mention" });
         continue;
       }
     }
     if (mk) {
-      badges.push(markerBadge(mk[1].toLowerCase(), mk[2] ?? "", "marker"));
+      badges.push({ verb: mk[1].toLowerCase(), arg: mk[2] ?? "", via: "marker" });
       continue;
     }
     kept.push(line);
@@ -78,22 +79,24 @@ function bodyWithBadges(body, self, final = true) {
   // "asked peers" action (the governor fires a single round regardless), so
   // collapse them into one badge with a "+N" count when N > 1. Non-ask-peer
   // verbs (e.g. return) are kept as-is, one per line.
-  const askPeer = badges.filter((b) => b.includes('data-verb="ask-peer"'));
-  const other = badges.filter((b) => !b.includes('data-verb="ask-peer"'));
-  let deduped = other;
+  const askPeer = badges.filter((b) => b.verb === "ask-peer");
+  const other = badges.filter((b) => b.verb !== "ask-peer");
+  let deduped = other.map((b) => markerBadge(b.verb, b.arg, b.via));
   if (askPeer.length > 0) {
     // Prefer an "all peers" label if any trigger was @all / no-arg; otherwise
     // show the first named target. Append "+N" for the extra trigger lines.
-    const hasAll = askPeer.some((b) => b.includes("all peers"));
-    const base = hasAll ? askPeer.find((b) => b.includes("all peers")) : askPeer[0];
+    const isAll = (b) => b.arg === "" || b.arg.toLowerCase() === "all";
+    const hasAll = askPeer.some(isAll);
+    const base = hasAll ? askPeer.find(isAll) : askPeer[0];
     const n = askPeer.length - 1;
-    // Insert the count just before the badge's closing '>' (the last one),
-    // so it renders inside the pill after the label.
-    const withCount = (b) => {
-      const idx = b.lastIndexOf(">");
-      return b.slice(0, idx) + ` <span class="badge-count">+${n}</span>` + b.slice(idx);
-    };
-    deduped = [n > 0 ? withCount(base) : base, ...other];
+    deduped = [markerBadge(base.verb, base.arg, base.via, n), ...deduped];
+    // Rebuild the merged badge from its parts (verb/arg/via + count) rather
+    // than slicing the rendered HTML — robust to the badge format changing.
+    const m = /^data-verb="([^"]*)" data-via="([^"]*)">/.exec(base);
+    const verb = m ? m[1] : "ask-peer";
+    const via = m ? m[2] : "mention";
+    const arg = base.includes("all peers") ? "" : ((base.match(/@([\w-]+)/) || [])[1] ?? "");
+    deduped = [markerBadge(verb, arg, via, n), ...other];
   }
   let md = mdRender(kept.join("\n"));
   // Inline mentions → styled chips. Placeholder survives markdown escaping;
