@@ -24,9 +24,16 @@ import {
   type SettledSubmissionRecord,
   type TaskRuntime,
 } from "@earendil-works/pi-durable";
-import { ArbiterDoc, HeadsDoc, appendRoomEvent, type RoomContext, type RoomEvent } from "./room.ts";
+import {
+  ArbiterDoc,
+  HeadsDoc,
+  appendRoomEvent,
+  bound,
+  type RoomContext,
+  type RoomEvent,
+} from "./room.ts";
 import type { Activation, Decision, Governor } from "./governor.ts";
-import { fanoutPrompt, peerPrompt } from "./projection.ts";
+import { agentName, channelWrap, fanoutPrompt, peerPrompt } from "./projection.ts";
 
 export interface TurnInput {
   /** Room log event id of the human input that woke this turn (H17). */
@@ -47,6 +54,10 @@ interface Round {
   speakerEvent: RoomEvent;
   targets: string[];
   mode: string;
+  /** False (default): relay — prompts rebuilt per head as earlier reactors
+   * settle. True: shared snapshot — all prompts prebuilt, heads run in
+   * parallel inside an armed arbiter window. */
+  parallel: boolean;
 }
 
 /**
@@ -214,10 +225,29 @@ export function defineTurnTask(deps: CoordinatorDeps) {
     parentsOf: (ref: PromptRef) => string[],
     cp: C,
     ctx: Context,
+    opts: {
+      /** True: submit every ref before waiting (shared snapshot; the caller
+       * must have armed the arbiter). False (default): relay — each ref's
+       * prompt is rebuilt from the current room log right before it is
+       * submitted, so a head sees the outputs that landed before it. */
+      parallel?: boolean;
+      /** Serial mode only: rebuild this ref's prompt just before submit.
+       * Receives the live checkpoint so relays can see outputs that settled
+       * earlier in the same call. */
+      rebuildPrompt?: (ref: PromptRef, cp: C) => Promise<string>;
+    } = {},
   ): Promise<C> {
+    const parallel = opts.parallel ?? false;
     const ids = await headIds(runtime, ctx);
-    for (const ref of refs) {
-      if (cp.done.includes(ref.requestId)) continue;
+
+    type Pending = {
+      ref: PromptRef;
+      submission: Awaited<ReturnType<ConversationHandle["submit"]>>;
+      waitPromise: Promise<SettledSubmissionRecord>;
+      timedOut: boolean;
+      timer: Promise<SettledSubmissionRecord>;
+    };
+    const submitOne = async (ref: PromptRef): Promise<Pending> => {
       const id = ids.get(ref.head);
       if (!id) throw new Error(`no conversation for head ${ref.head}`);
       const handle: ConversationHandle | undefined = await runtime.conversation(id, ctx);
@@ -232,10 +262,16 @@ export function defineTurnTask(deps: CoordinatorDeps) {
       // timeout the submission is aborted and the activation is finalized as
       // blocked, so the governor's blocked short-circuit returns to the
       // operator.
-      let timedOut = false;
-      const timer: Promise<SettledSubmissionRecord> = new Promise((resolve) => {
+      const pending: Pending = {
+        ref,
+        submission,
+        waitPromise: submission.wait(ctx),
+        timedOut: false,
+        timer: undefined as unknown as Promise<SettledSubmissionRecord>,
+      };
+      pending.timer = new Promise((resolve) => {
         const t = setTimeout(() => {
-          timedOut = true;
+          pending.timedOut = true;
           resolve({
             status: "unanswered",
             reason: "turn deadline exceeded",
@@ -243,12 +279,51 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         }, turnTimeoutMs);
         t.unref();
       });
-      const waitPromise = submission.wait(ctx);
-      const settledRec = await Promise.race([waitPromise, timer]);
-      void waitPromise.catch(() => {});
-      if (timedOut) await submission.abort(ctx).catch(() => {});
-      cp = await finalize(runtime, ref, settledRec, mode, depth, parentsOf(ref), cp, ctx);
-      cp = { ...cp, done: [...cp.done, ref.requestId] };
+      return pending;
+    };
+    const settleOne = async (pending: Pending): Promise<void> => {
+      const settledRec = await Promise.race([pending.waitPromise, pending.timer]);
+      void pending.waitPromise.catch(() => {});
+      if (pending.timedOut) await pending.submission.abort(ctx).catch(() => {});
+      cp = await finalize(
+        runtime,
+        pending.ref,
+        settledRec,
+        mode,
+        depth,
+        parentsOf(pending.ref),
+        cp,
+        ctx,
+      );
+      cp = { ...cp, done: [...cp.done, pending.ref.requestId] };
+    };
+
+    if (parallel) {
+      // Submit everything from the same snapshot, then settle in list
+      // order (deterministic room-log order; execution was concurrent).
+      const pending: Pending[] = [];
+      for (const ref of refs) {
+        if (cp.done.includes(ref.requestId)) continue;
+        pending.push(await submitOne(ref));
+      }
+      for (const p of pending) await settleOne(p);
+    } else {
+      for (const ref of refs) {
+        if (cp.done.includes(ref.requestId)) continue;
+        if (opts.rebuildPrompt) {
+          ref.prompt = await opts.rebuildPrompt(ref, cp);
+          // Persist the relay prompt before submitting: a restart after
+          // this commit resubmits the same requestId, which dedups.
+          // Resubmit-window invariant: a ref's checkpointed prompt is never
+          // the fanout "" placeholder at submit time. Placeholder refs are
+          // always rebuilt (and committed) immediately before their own
+          // submit in the same iteration, and refs already finalized are
+          // excluded via cp.done — so a resumed task either finds the ref
+          // done or rebuilds it; it never submits an empty prompt.
+          await runtime.commit(() => ({ status: "running" as const, checkpoint: cp }), ctx);
+        }
+        await settleOne(await submitOne(ref));
+      }
     }
     return cp;
   }
@@ -394,6 +469,11 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         // from the same pre-turn snapshot shares one revision, so a
         // write landing after a peer's turn finished is still a lost
         // update. The gate lifts at the join.
+        //
+        // Known gap: bash is not gated by the arbiter, so concurrent bash
+        // mutations inside a parallel window are unarbitrated (see the
+        // README's deliberate-limitations note). Serial relay rounds are
+        // single-writer and avoid this.
         const fingerprint = workspaceFingerprint();
         await runtime.commit(async (tx) => {
           const d = await tx.doc(ArbiterDoc);
@@ -404,31 +484,43 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           return undefined;
         }, ctx);
 
+        // Execution shape is governor policy, not a launch flag: parallel
+        // rounds prebuild every prompt from the same snapshot; serial
+        // (relay) rounds rebuild per head as earlier targets settle.
+        const parallel =
+          governor.fanoutParallel?.({
+            targets: task.input.targets,
+            participants: names,
+            humanInput: task.input.humanText,
+          }) ?? task.input.targets.length > 1;
+
         if (cp.fanout.length === 0) {
           cp = {
             ...cp,
             fanout: task.input.targets.map((head) => ({
               head,
               requestId: `turn-${task.input.turnNo}-fanout-${head}`,
-              prompt: fanoutPrompt({
-                events: log,
-                self: head,
-                participants: names,
-                humanEvent: {
-                  id: task.input.humanEventId,
-                  seq: 0,
-                  ts: 0,
-                  author: "human",
-                  kind: "human_input",
-                  body: task.input.humanText,
-                  visibility: "room",
-                  depth: 0,
-                },
-                roomRef,
-                excerptLimit,
-                mutationNotice: notice,
-                addressedDirectly: task.input.targets.length < names.length,
-              }),
+              prompt: parallel
+                ? fanoutPrompt({
+                    events: log,
+                    self: head,
+                    participants: names,
+                    humanEvent: {
+                      id: task.input.humanEventId,
+                      seq: 0,
+                      ts: 0,
+                      author: "human",
+                      kind: "human_input",
+                      body: task.input.humanText,
+                      visibility: "room",
+                      depth: 0,
+                    },
+                    roomRef,
+                    excerptLimit,
+                    mutationNotice: notice,
+                    addressedDirectly: task.input.targets.length < names.length,
+                  })
+                : "", // built lazily per head in waitAndFinalize (relay)
             })),
           };
           await runtime.commit(() => ({ status: "running" as const, checkpoint: cp }), ctx);
@@ -442,6 +534,36 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           () => [task.input.humanEventId],
           cp,
           ctx,
+          {
+            parallel,
+            rebuildPrompt: parallel
+              ? undefined
+              : async (ref) => {
+                  // Relay: re-snapshot the room log so this head's prompt
+                  // includes the outputs that landed before it.
+                  const freshLog = await roomLog(runtime, ctx);
+                  const freshArb = await runtime.snapshot(ArbiterDoc, ctx);
+                  return fanoutPrompt({
+                    events: freshLog,
+                    self: ref.head,
+                    participants: names,
+                    humanEvent: {
+                      id: task.input.humanEventId,
+                      seq: 0,
+                      ts: 0,
+                      author: "human",
+                      kind: "human_input",
+                      body: task.input.humanText,
+                      visibility: "room",
+                      depth: 0,
+                    },
+                    roomRef,
+                    excerptLimit,
+                    mutationNotice: mutationNotice(freshArb?.mutations ?? [], 0),
+                    addressedDirectly: task.input.targets.length < names.length,
+                  });
+                },
+          },
         );
         cp = await detectMutations(runtime, "fanout", cp, ctx);
 
@@ -527,7 +649,12 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           throw new Error(`governor referenced unknown event ${dec.speakerEventId}`);
         const arb = await runtime.snapshot(ArbiterDoc, ctx);
         const notice = mutationNotice(arb?.mutations ?? [], 0);
-        const round: Round = { speakerEvent, targets: dec.activate, mode: dec.mode };
+        const round: Round = {
+          speakerEvent,
+          targets: dec.activate,
+          mode: dec.mode,
+          parallel: dec.parallel ?? false,
+        };
         cp = {
           phase: "react",
           round,
@@ -553,6 +680,19 @@ export function defineTurnTask(deps: CoordinatorDeps) {
       react: async (task, runtime, ctx) => {
         let cp: TurnCheckpoint = task.state.checkpoint;
         const round = cp.round!;
+        // A parallel react round is a concurrent window: multiple heads act
+        // from the same snapshot, so arm the arbiter exactly as fanout does.
+        if (round.parallel) {
+          const fingerprint = workspaceFingerprint();
+          await runtime.commit(async (tx) => {
+            const d = await tx.doc(ArbiterDoc);
+            d.armed = true;
+            d.holder = "";
+            d.deniedOnce = {};
+            if (fingerprint) d.fingerprint = fingerprint;
+            return undefined;
+          }, ctx);
+        }
         cp = await waitAndFinalize(
           runtime,
           cp.roundSubs,
@@ -561,8 +701,46 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           () => [round.speakerEvent.id, task.input.humanEventId],
           cp,
           ctx,
+          {
+            parallel: round.parallel,
+            rebuildPrompt: round.parallel
+              ? undefined
+              : async (ref, current) => {
+                  // Relay: append the outputs of reactors that settled
+                  // earlier in this round, channel-wrapped for attribution.
+                  const log = await roomLog(runtime, ctx);
+                  const arb = await runtime.snapshot(ArbiterDoc, ctx);
+                  const notice = mutationNotice(arb?.mutations ?? [], 0);
+                  let prompt = peerPrompt({
+                    speaker: round.speakerEvent,
+                    roomRef,
+                    excerptLimit,
+                    mutationNotice: notice,
+                  });
+                  for (const a of current.settled) {
+                    if (a.depth !== current.depth || a.eventId === round.speakerEvent.id) continue;
+                    const ev = log.find((e) => e.id === a.eventId);
+                    if (!ev) continue;
+                    prompt +=
+                      "\n\n" +
+                      channelWrap(
+                        `Also from this round, peer ${ev.author} concluded (turn ${ev.id}):\n${bound(ev.body, excerptLimit)}`,
+                        agentName(ev.author),
+                        { event: ev.id, from_role: "peer" },
+                      );
+                  }
+                  return prompt;
+                },
+          },
         );
         cp = await detectMutations(runtime, "react", cp, ctx);
+        if (round.parallel) {
+          await runtime.commit(async (tx) => {
+            const d = await tx.doc(ArbiterDoc);
+            d.armed = false;
+            return undefined;
+          }, ctx);
+        }
         await runtime.commit(
           () => ({
             status: "running" as const,

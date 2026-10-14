@@ -44,7 +44,7 @@ function escapeXML(s: string): string {
     .replaceAll("'", "&apos;");
 }
 
-function agentName(role: string): string {
+export function agentName(role: string): string {
   return `agent-${role}`;
 }
 

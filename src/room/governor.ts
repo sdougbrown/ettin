@@ -41,11 +41,24 @@ export interface Decision {
   speakerEventId: string;
   mode: string;
   reason: string;
+  /** Execution shape for a multi-head round: parallel (all heads share the
+   * same pre-round snapshot) or serial (relay — each head's prompt is built
+   * after the previous one settles, so it sees prior outputs). Defaults to
+   * serial. The coordinator owns the mechanism; this is policy only. */
+  parallel?: boolean;
 }
 
 export interface Governor {
   /** Async allowed: transport-backed governors await their API call. */
   decide(state: State): Decision | Promise<Decision>;
+  /** Execution shape for the operator fanout round, decided before any
+   * activation exists. Absent ⇒ coordinator default (parallel when the
+   * operator addressed more than one head). */
+  fanoutParallel?(input: {
+    targets: string[];
+    participants: string[];
+    humanInput: string;
+  }): boolean;
 }
 
 const MARKER_LINE = /^<\|room:\s*([a-z-]+)\s*(?:\|\s*([^|>]*?)\s*)?\|>$/i;
@@ -107,9 +120,19 @@ export class MarkerGovernor implements Governor {
         speakerEventId: a.eventId,
         mode: "react",
         reason: `ask-peer marker in ${a.eventId} (${scope})`,
+        // Relay semantics: each reactor sees the peers that answered
+        // before it in the round.
+        parallel: false,
       };
     }
     return { activate: [], speakerEventId: "", mode: "", reason: "no peer request" };
+  }
+
+  /** Operator fanout: multiple addressed heads answer independently from
+   * the same snapshot (the useful default for @-broadcasts); a single
+   * target is trivially serial. */
+  fanoutParallel(input: { targets: string[] }): boolean {
+    return input.targets.length > 1;
   }
 }
 

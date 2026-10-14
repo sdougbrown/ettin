@@ -161,7 +161,11 @@ function headTool(head, callId, tool, stateName) {
 
 function headStatus(head, running) {
   const card = document.querySelector(`.head-card[data-head="${head}"] .head-status`);
-  if (card) card.classList.toggle("running", running);
+  if (card) {
+    card.classList.toggle("running", running);
+    const label = card.querySelector(".head-status-text");
+    if (label) label.textContent = running ? "running" : "idle";
+  }
   if (!running) {
     // The turn ended; the final output arrives as a room event shortly.
     const state = live.get(head);
@@ -524,7 +528,7 @@ function renderHeadCard(h) {
     `<button class="head-remove" title="Remove ${esc(h.name)} from the room" data-name="${esc(h.name)}">×</button>` +
     `<span class="head-name">${esc(h.name)}</span>` +
     `<span class="head-model">${esc(h.provider)}/${esc(h.model)}</span>` +
-    `<span class="head-status"><span class="dot"></span>idle</span>`;
+    `<span class="head-status"><span class="dot"></span><span class="head-status-text">idle</span></span>`;
   headListEl.appendChild(li);
 }
 

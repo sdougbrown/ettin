@@ -104,5 +104,10 @@ npm run smoke      # full room loop on scripted faux providers
 - Private asides (fork-based) not wired yet — the data model has the place.
 - Jev governor not ported; `MarkerGovernor` is the floor and the interface is
   the slot.
-- `bash` is not gated by the arbiter; mutation detection is advisory.
+- `bash` is not gated by the arbiter; mutation detection is advisory. This
+  matters more now that rounds can run in parallel: in a parallel window two
+  heads may run bash concurrently in the same workspace, and those mutations
+  are unarbitrated (write/edit tools still claim first-writer-wins). Serial
+  relay rounds avoid this; per-head worktrees (the sandbox plan's Stage 3)
+  are the eventual fix.
 - One process owns the storage (pi-durable constraint).
