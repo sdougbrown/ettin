@@ -80,8 +80,22 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
         if (e.kind !== "ettin.event" || !ev || ev.seq <= lastSeq) continue;
         lastSeq = ev.seq;
         broadcast("room_event", { event: ev });
+        // A settling turn may leave queued inputs; drain with retries — the
+        // governor event can land before the task's terminal commit.
+        if (ev.kind === "governor" && ev.body.includes("return to human"))
+          void drainPendingWithRetry();
       }
     });
+  }
+
+  /** Drain queued inputs, retrying while the settling turn is still live. */
+  function drainPendingWithRetry(attempt = 0): void {
+    void app
+      .drainPending()
+      .then((done) => {
+        if (!done && attempt < 20) setTimeout(() => drainPendingWithRetry(attempt + 1), 500);
+      })
+      .catch(() => {});
   }
 
   async function watchHead(
@@ -182,6 +196,8 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
     await watchRoom(ctx);
     await watchApprovals(ctx);
     for (const h of app.heads.list()) await watchHead(h.name, h.conversationId, ctx);
+    // Resume queued inputs from before a restart.
+    drainPendingWithRetry();
   }
 
   const server = createServer(async (req, res) => {
@@ -220,13 +236,8 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
           json(res, 400, { error: "text is required" });
           return;
         }
-        // One operator turn at a time: a second fan-out during a live turn
-        // would break the arbiter's same-snapshot assumption.
-        const live = await app.rc.harness.inspect(BACKGROUND_CONTEXT);
-        if (live.tasks.some((t) => t.record.kind === "ettin.turn")) {
-          json(res, 409, { error: "the room is still working on the previous turn" });
-          return;
-        }
+        // Queueing: while a turn is live the input is durably queued and
+        // drained when the live turn settles (see app.drainPending).
         const { eventId } = await app.say(body.text.trim(), body.targets ?? []);
         json(res, 200, { eventId });
         return;
@@ -239,6 +250,7 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
           return;
         }
         await app.rc.harness.abortTask(turn.record.id, BACKGROUND_CONTEXT);
+        void drainPendingWithRetry();
         json(res, 200, { ok: true });
         return;
       }

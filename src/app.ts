@@ -109,16 +109,21 @@ export class EttinApp {
     harness.resume();
   }
 
-  /** Operator input → room log entry + durable turn task, in one commit. */
+  /** Operator input → room log entry + durable turn task, in one commit.
+   * While a turn is live the input is durably queued: the event is appended
+   * with meta.queued and its turn is created when the live turn settles
+   * (see drainPending). */
   async say(
     text: string,
     targets: string[] = [],
     ctx: Context = BACKGROUND_CONTEXT,
-  ): Promise<{ eventId: string; taskId: number }> {
+  ): Promise<{ eventId: string; taskId: number | null }> {
     const headNames = targets.length > 0 ? targets : this.heads.list().map((h) => h.name);
     if (headNames.length === 0) throw new Error("no heads in the room yet");
     const rc = this.rc;
     const turnTask = this.turnTask;
+    const live = await this.rc.harness.inspect(ctx);
+    const busy = live.tasks.some((t) => t.record.kind === "ettin.turn");
     return rc.room.commit(async (tx) => {
       const doc = await tx.doc(RoomDoc, rc.room.id);
       const turnNo = doc.seq + 1;
@@ -133,9 +138,10 @@ export class EttinApp {
         body: text,
         visibility: "room",
         depth: 0,
-        meta: { targets: headNames.join(",") },
+        meta: { targets: headNames.join(","), ...(busy ? { queued: "1" } : {}) },
       };
       await tx.appendEntry(RoomEventEntry, rc.room.id, { data: event });
+      if (busy) return { eventId: event.id, taskId: null };
       const task = await tx.createTask(
         turnTask,
         { humanEventId: event.id, humanText: text, targets: headNames, turnNo },
@@ -143,6 +149,46 @@ export class EttinApp {
       );
       return { eventId: event.id, taskId: task as unknown as number };
     }, ctx);
+  }
+
+  /** Start the turn for the oldest queued input that has none yet. Returns
+   * true when a turn was created or nothing is queued; false when a turn is
+   * live (retry later). Idempotent: inputs are matched to tasks by
+   * humanEventId, so a restart never double-processes a queue. */
+  async drainPending(ctx: Context = BACKGROUND_CONTEXT): Promise<boolean> {
+    const live = await this.rc.harness.inspect(ctx);
+    if (live.tasks.some((t) => t.record.kind === "ettin.turn")) return false;
+    const events = await roomEvents(this.rc, ctx);
+    const withTasks = new Set(
+      live.tasks
+        .map((t) => (t.record.input as { humanEventId?: string } | undefined)?.humanEventId)
+        .filter((id): id is string => typeof id === "string"),
+    );
+    const next = events.find(
+      (e) => e.kind === "human_input" && e.meta?.queued && !withTasks.has(e.id),
+    );
+    if (!next) return true;
+    const targets = String(next.meta?.targets ?? "")
+      .split(",")
+      .filter(Boolean);
+    const rc = this.rc;
+    const turnTask = this.turnTask;
+    await rc.room.commit(async (tx) => {
+      const doc = await tx.doc(RoomDoc, rc.room.id);
+      const turnNo = doc.seq + 1;
+      doc.seq += 1;
+      await tx.createTask(
+        turnTask,
+        {
+          humanEventId: next.id,
+          humanText: next.body,
+          targets: targets.length > 0 ? targets : this.heads.list().map((h) => h.name),
+          turnNo,
+        },
+        { ownership: { kind: "conversation" } },
+      );
+    }, ctx);
+    return true;
   }
 
   async events(ctx: Context = BACKGROUND_CONTEXT): Promise<RoomEvent[]> {

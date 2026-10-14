@@ -85,18 +85,12 @@ function bodyWithBadges(body, self, final = true) {
   if (askPeer.length > 0) {
     // Prefer an "all peers" label if any trigger was @all / no-arg; otherwise
     // show the first named target. Append "+N" for the extra trigger lines.
-    const isAll = (b) => b.arg === "" || b.arg.toLowerCase() === "all";
-    const hasAll = askPeer.some(isAll);
-    const base = hasAll ? askPeer.find(isAll) : askPeer[0];
+    const hasAll = askPeer.some((b) => b.arg === "" || b.arg.toLowerCase() === "all");
+    const base = hasAll
+      ? askPeer.find((b) => b.arg === "" || b.arg.toLowerCase() === "all")
+      : askPeer[0];
     const n = askPeer.length - 1;
     deduped = [markerBadge(base.verb, base.arg, base.via, n), ...deduped];
-    // Rebuild the merged badge from its parts (verb/arg/via + count) rather
-    // than slicing the rendered HTML — robust to the badge format changing.
-    const m = /^data-verb="([^"]*)" data-via="([^"]*)">/.exec(base);
-    const verb = m ? m[1] : "ask-peer";
-    const via = m ? m[2] : "mention";
-    const arg = base.includes("all peers") ? "" : ((base.match(/@([\w-]+)/) || [])[1] ?? "");
-    deduped = [markerBadge(verb, arg, via, n), ...other];
   }
   let md = mdRender(kept.join("\n"));
   // Inline mentions → styled chips. Placeholder survives markdown escaping;
@@ -129,12 +123,14 @@ function renderEvent(ev) {
       el.className = "msg human";
       el.dataset.eventId = ev.id;
       const targets = (ev.meta?.targets ?? "").split(",").filter(Boolean);
+      const queued = ev.meta?.queued ? `<span class="badge">⏳ queued</span>` : "";
       const meta =
         heads.size > 0 && targets.length > 0 && targets.length < heads.size
           ? `<span class="badge route">→ ${targets.map(esc).join(", ")}</span>`
           : "";
       el.innerHTML =
-        (meta ? `<div class="meta">${meta}</div>` : "") + `<div class="body">${esc(ev.body)}</div>`;
+        (meta || queued ? `<div class="meta">${queued}${meta}</div>` : "") +
+        `<div class="body">${esc(ev.body)}</div>`;
       transcriptEl.appendChild(el);
       break;
     }

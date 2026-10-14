@@ -63,6 +63,7 @@ const headA = scriptedFaux("faux-head-a", [
   "Confirmed.\n<|room: ask-peer | a|>", // turn 2: self-target, filtered by no-echo
   "Standing by.", // turn 3: no marker
   "Ping received.\n@b", // turn 4: lone-line mention triggers a react round
+  "Queued reply from a.", // turn 5: drained queued input
 ]);
 // Serial react rounds are relays: b's prompt is rebuilt after a settles, so
 // it must carry a's fan-out output. Captured by the response factory below.
@@ -204,7 +205,21 @@ turn = 4;
 // Turn 4: a lone-line "@b" mention in a's output is the natural shorthand
 // for ask-peer | b — it resolves (b is a participant) and triggers a round.
 await app.say("@a", ["a"]);
+// While turn 4 is live, a second input must queue (no turn task yet).
+const queued = await app.say("queued ping", ["a"]);
+if (queued.taskId !== null)
+  throw new Error("input during a live turn should queue, not start a turn");
 await waitForReturnToHuman();
+// The settled turn leaves the queue; draining starts turn 5 for the input.
+if (!(await app.events()).some((e) => e.kind === "human_input" && e.meta?.queued))
+  throw new Error("queued input missing from the room log");
+await app.drainPending();
+turn = 5;
+await waitForReturnToHuman();
+const turn5 = (await app.events()).filter(
+  (e) => e.kind === "head_output" && e.body === "Queued reply from a.",
+);
+if (turn5.length !== 1) throw new Error("drained queued input never produced its turn output");
 
 const all = await app.events();
 const lastSeq = all.findIndex((e) => e.id === "human2") - 1;
