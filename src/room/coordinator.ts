@@ -138,6 +138,40 @@ function debugf(format: string, ...args: unknown[]): void {
   if (process.env.ROOM_DEBUG) console.error(`room-debug: ${format}`, ...args);
 }
 
+/** Authors of the head outputs belonging to the previous turn — the actors
+
+ * the current untargeted message would continue with. The turn boundary is
+
+ * the most recent `fanout` governor event (every turn logs one), NOT the
+
+ * previous human input: a queued input lands in the log mid-turn, so
+
+ * resetting on human inputs would span two turns' outputs. Empty before
+
+ * the first turn. */
+
+export function lastResponderAuthors(events: RoomEvent[], humanEventId: string): string[] {
+  let start = 0;
+
+  for (let i = 0; i < events.length; i++) {
+    if (events[i]!.id === humanEventId) break;
+
+    if (events[i]!.kind === "governor" && events[i]!.body.startsWith("fanout ")) start = i + 1;
+  }
+
+  const authors: string[] = [];
+
+  for (let i = start; i < events.length; i++) {
+    const ev = events[i]!;
+
+    if (ev.id === humanEventId) break;
+
+    if (ev.kind === "head_output" && !authors.includes(ev.author)) authors.push(ev.author);
+  }
+
+  return authors;
+}
+
 export function defineTurnTask(deps: CoordinatorDeps) {
   const { rc, governor, maxDepth, maxAuto, excerptLimit, roomRef, turnTimeoutMs, workspace } = deps;
 
@@ -326,27 +360,6 @@ export function defineTurnTask(deps: CoordinatorDeps) {
       }
     }
     return cp;
-  }
-
-  /** Authors of the head outputs belonging to the previous turn — the actors
-   * the current untargeted message would continue with. The turn boundary is
-   * the most recent `fanout` governor event (every turn logs one), NOT the
-   * previous human input: a queued input lands in the log mid-turn, so
-   * resetting on human inputs would span two turns' outputs. Empty before
-   * the first turn. */
-  function lastResponderAuthors(events: RoomEvent[], humanEventId: string): string[] {
-    let start = 0;
-    for (let i = 0; i < events.length; i++) {
-      if (events[i]!.id === humanEventId) break;
-      if (events[i]!.kind === "governor" && events[i]!.body.startsWith("fanout ")) start = i + 1;
-    }
-    const authors: string[] = [];
-    for (let i = start; i < events.length; i++) {
-      const ev = events[i]!;
-      if (ev.id === humanEventId) break;
-      if (ev.kind === "head_output" && !authors.includes(ev.author)) authors.push(ev.author);
-    }
-    return authors;
   }
 
   /** Git working-tree fingerprint, untracked content included: mutations by
