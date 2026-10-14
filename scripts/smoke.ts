@@ -62,6 +62,7 @@ const headA = scriptedFaux("faux-head-a", [
   "Proposal: gate by token bucket.\n<|room: ask-peer|>", // fan-out answer: all peers
   "Confirmed.\n<|room: ask-peer | a|>", // turn 2: self-target, filtered by no-echo
   "Standing by.", // turn 3: no marker
+  "Ping received.\n@b", // turn 4: lone-line mention triggers a react round
 ]);
 // Serial react rounds are relays: b's prompt is rebuilt after a settles, so
 // it must carry a's fan-out output. Captured by the response factory below.
@@ -76,6 +77,7 @@ const headB = scriptedFaux("faux-head-b", [
   }, // turn 1 react (relay prompt assertion runs here)
   "This is aligned <|room: ask-peer|> inline. // turn 2: embedded in prose — ignored",
   "Confirmed, done.", // turn 3: no marker anywhere,
+  "Mention heard.", // turn 4 react: triggered by a's bare "@b" mention
 ]);
 
 const headC = scriptedFaux("faux-head-c", [
@@ -198,9 +200,31 @@ turn = 3;
 await app.say("b: confirm your position.");
 await waitForReturnToHuman();
 
+turn = 4;
+// Turn 4: a lone-line "@b" mention in a's output is the natural shorthand
+// for ask-peer | b — it resolves (b is a participant) and triggers a round.
+await app.say("@a", ["a"]);
+await waitForReturnToHuman();
+
 const all = await app.events();
 const lastSeq = all.findIndex((e) => e.id === "human2") - 1;
-const turns23 = all.filter((e) => e.seq > (lastSeq >= 0 ? all[lastSeq]!.seq : 0));
+const endIdx = all.findIndex((e) => e.id === "human4");
+const turns23 = all.filter(
+  (e) => e.seq > (lastSeq >= 0 ? all[lastSeq]!.seq : 0) && (endIdx < 0 || all.indexOf(e) < endIdx),
+);
+// Turn 4 assertions: the mention round fired, attributed to the mention.
+if (endIdx < 0) throw new Error("turn 4 never started");
+const turn4 = all.filter((e) => e.seq >= all[endIdx]!.seq);
+if (!turn4.some((e) => e.kind === "governor" && e.body.includes("ask-peer mention"))) {
+  throw new Error(
+    `turn 4 should react via lone-line mention: ${JSON.stringify(turn4.map((e) => e.body))}`,
+  );
+}
+const a4ping = turn4.find((e) => e.kind === "head_output" && e.body.includes("@b"));
+const b4react = turn4.find((e) => e.kind === "head_output" && e.meta?.mode === "react");
+if (!a4ping || !b4react) throw new Error("turn 4: missing mention output or react");
+if (!b4react.parents?.includes(a4ping.id))
+  throw new Error(`turn 4: b's react should reference a's mention output ${a4ping.id}`);
 const reasons = turns23.filter((e) => e.kind === "governor").map((e) => e.body);
 const noPeerRequests = reasons.filter((r) => r.includes("no peer request"));
 if (noPeerRequests.length !== 2) {

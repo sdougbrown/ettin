@@ -725,3 +725,38 @@ body {
 .body.md del {
   color: var(--text-dim);
 }
+
+/* ---------- room-marker badges ---------- */
+
+.marker-badges {
+  margin-top: 0.35em;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3em;
+}
+.marker-badge {
+  display: inline-block;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.15em 0.6em;
+  border-radius: 999px;
+  border: 1px solid var(--head-color, var(--border));
+  color: var(--head-color, var(--text-dim));
+  background: color-mix(in srgb, var(--head-color, transparent) 12%, transparent);
+}
+.marker-badge[data-via="mention"] {
+  border-style: dashed;
+}
+.badge-count {
+  font-size: 0.85em;
+  opacity: 0.7;
+  margin-left: 0.3em;
+  letter-spacing: 0;
+}
+.mention {
+  color: var(--head-color, var(--text));
+  font-weight: 600;
+  padding: 0 0.15em;
+  border-radius: 4px;
+}

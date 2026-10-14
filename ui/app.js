@@ -30,6 +30,84 @@ function esc(s) {
   return String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+/* ---------- room markers → badges ---------- */
+
+// Whole-line room markers (same convention the governor parses — see
+// parseRoomMarker/parseMention in src/room/governor.ts). Rendered as
+// badges, not prose.
+const ROOM_MARKER = /^<\|room:\s*([a-z-]+)\s*(?:\|\s*([^|>]*?)\s*)?\|>$/i;
+const LONE_MENTION = /^@([a-zA-Z][\w-]*)\??$/;
+
+function markerBadge(verb, arg, via) {
+  const target = arg === "" || arg.toLowerCase() === "all" ? "all peers" : `@${esc(arg)}`;
+  const labels = { "ask-peer": `↪ asked ${target}` };
+  return `<span class="marker-badge" data-verb="${esc(verb)}" data-via="${esc(via)}">${labels[verb] ?? esc(verb)}</span>`;
+}
+
+/** Pull whole-line room markers and resolving lone-line mentions out of a
+ * head's body and render them as badges; remaining text goes through
+ * markdown with inline mentions styled as chips. `final` marks the last
+ * line as complete (room events vs. an in-flight stream). */
+function bodyWithBadges(body, self, final = true) {
+  const lines = String(body).split("\n");
+  const known = [...heads.keys()].map((n) => n.toLowerCase());
+  const kept = [];
+  const badges = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const last = i === lines.length - 1;
+    const mk = ROOM_MARKER.exec(line.trim());
+    const men = LONE_MENTION.exec(line.trim());
+    // A trailing lone mention in a live stream may still be growing into a
+    // sentence ("@qwen is on it"); only treat it as a ping when it is
+    // certainly complete (a newer line exists, or the event is final).
+    if (men && (final || !last)) {
+      const name = men[1].toLowerCase();
+      if (name === "all" || name === "room" || known.includes(name)) {
+        badges.push(markerBadge("ask-peer", men[1], "mention"));
+        continue;
+      }
+    }
+    if (mk) {
+      badges.push(markerBadge(mk[1].toLowerCase(), mk[2] ?? "", "marker"));
+      continue;
+    }
+    kept.push(line);
+  }
+  // Dedup: multiple ask-peer trigger lines in one output are one logical
+  // "asked peers" action (the governor fires a single round regardless), so
+  // collapse them into one badge with a "+N" count when N > 1. Non-ask-peer
+  // verbs (e.g. return) are kept as-is, one per line.
+  const askPeer = badges.filter((b) => b.includes('data-verb="ask-peer"'));
+  const other = badges.filter((b) => !b.includes('data-verb="ask-peer"'));
+  let deduped = other;
+  if (askPeer.length > 0) {
+    // Prefer an "all peers" label if any trigger was @all / no-arg; otherwise
+    // show the first named target. Append "+N" for the extra trigger lines.
+    const hasAll = askPeer.some((b) => b.includes("all peers"));
+    const base = hasAll ? askPeer.find((b) => b.includes("all peers")) : askPeer[0];
+    const n = askPeer.length - 1;
+    // Insert the count just before the badge's closing '>' (the last one),
+    // so it renders inside the pill after the label.
+    const withCount = (b) => {
+      const idx = b.lastIndexOf(">");
+      return b.slice(0, idx) + ` <span class="badge-count">+${n}</span>` + b.slice(idx);
+    };
+    deduped = [n > 0 ? withCount(base) : base, ...other];
+  }
+  let md = mdRender(kept.join("\n"));
+  // Inline mentions → styled chips. Placeholder survives markdown escaping;
+  // swapped for the chip after render so it never lands inside a tag.
+  md = md.replace(/@([a-zA-Z][\w-]*)/g, (m, name) =>
+    known.includes(name.toLowerCase()) ? `§§M:${name}§§` : m,
+  );
+  md = md.replace(/§§M:([a-zA-Z][\w-]*)§§/g, (m, name) => {
+    const c = colorFor(heads.get(name.toLowerCase())?.name ?? name);
+    return `<span class="mention" style="--head-color:${c}">@${esc(name)}</span>`;
+  });
+  return deduped.length ? `${md}<div class="marker-badges">${deduped.join("")}</div>` : md;
+}
+
 function colorFor(name) {
   if (!heads.has(name)) heads.set(name, { name, color: PALETTE[heads.size % PALETTE.length] });
   return heads.get(name).color;
@@ -77,7 +155,7 @@ function renderEvent(ev) {
       el.innerHTML =
         `<div class="meta"><span class="who">${esc(ev.author)}</span>` +
         `<span>${esc(rec.model ?? "")}</span>${mode}${stop}${parents}${depth}</div>` +
-        `<div class="body md">${mdRender(ev.body)}</div>`;
+        `<div class="body md">${bodyWithBadges(ev.body, ev.author, true)}</div>`;
       transcriptEl.appendChild(el);
       break;
     }
@@ -136,7 +214,11 @@ function liveEl(head) {
 function headStream(head, delta) {
   const state = liveEl(head);
   state.text += delta;
-  state.el.querySelector(".body").innerHTML = mdRender(state.text);
+  // Strip a partial trailing marker during streaming so the raw control
+  // syntax never flashes; complete markers pass through to bodyWithBadges.
+  const partial = /<\|room:[^|>]*$/.exec(state.text);
+  const visible = partial ? state.text.slice(0, partial.index) : state.text;
+  state.el.querySelector(".body").innerHTML = bodyWithBadges(visible, head, false);
   scrollDown();
 }
 

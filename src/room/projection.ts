@@ -31,7 +31,13 @@ export function orientationText(self: string, peers: string[], roomRef: string):
     "To ask the peer head(s) to weigh in, end your reply with a marker on its own line:\n" +
     "  <|room: ask-peer | all|>        every peer reacts (or omit the argument: <|room: ask-peer|>)\n" +
     "  <|room: ask-peer | b|>          only head b reacts (name one head)\n" +
-    "The room activates the peer(s) you name; the operator may always override."
+    "  @b (alone on its own line)      natural shorthand for ask-peer | b\n" +
+    "  @all                            shorthand for ask-peer with no argument\n" +
+    "The room activates the peer(s) you name; the operator may always override.\n" +
+    "Use these liberally — whenever another head's input would move the work\n" +
+    "forward, call it in. The turn envelope (budget/depth) bounds the rounds,\n" +
+    "so a trigger is cheap. Inline mentions in prose never activate anyone.\n" +
+    "End with <|room: return|> only when the task is done."
   );
 }
 

@@ -14,7 +14,7 @@
  * the room keeps working without the decision API.
  */
 import type { Decision, Governor, State } from "./governor.ts";
-import { markerTargets, parseRoomMarker } from "./governor.ts";
+import { markerTargets, parseMention, parseRoomMarker } from "./governor.ts";
 
 export interface TypedAnswers {
   /** Choice of who speaks next: human | stop | all_heads | <head name>. */
@@ -101,7 +101,9 @@ export function decideFromAnswers(g: GovernorEnv, s: State, ans: TypedAnswers): 
   // explicit request is silently denied. A directed marker sharpens the
   // target; without one, all peers react.
   if (ans.requests_peer >= 0.8 && last) {
-    const marker = parseRoomMarker(last.finalOutput);
+    const marker =
+      parseRoomMarker(last.finalOutput) ??
+      parseMention(last.finalOutput, s.participants, last.participant);
     const targets = marker
       ? markerTargets(marker, s.participants, last.participant)
       : s.participants.filter((p) => p !== last.participant);

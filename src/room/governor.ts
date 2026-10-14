@@ -80,6 +80,37 @@ export function parseRoomMarker(out: string): RoomMarker | undefined {
   return undefined;
 }
 
+/** A lone-line mention ("@b" or "@all", optional trailing "?") resolves to
+ * an ask-peer trigger — but only when the name resolves to a known
+ * participant (or all). Inline mentions in prose are inert. Non-resolving
+ * names fall through as plain text. */
+export function parseMention(
+  out: string,
+  participants: string[],
+  speaker: string,
+): RoomMarker | undefined {
+  for (const rawLine of out.split("\n")) {
+    const line = rawLine.trim();
+    const m = /^@([a-zA-Z][\w-]*)\??$/.exec(line);
+    if (!m) continue;
+    const name = m[1]!.toLowerCase();
+    if (name === "all" || name === "room") return { verb: "ask-peer", arg: "" };
+    const hit = participants.find((p) => p.toLowerCase() === name);
+    if (hit && hit !== speaker) return { verb: "ask-peer", arg: hit };
+  }
+  return undefined;
+}
+
+/** The room trigger for an output: an explicit marker if present, else a
+ * resolving lone-line mention. Both normalize to a RoomMarker. */
+export function roomTrigger(
+  out: string,
+  participants: string[],
+  speaker: string,
+): RoomMarker | undefined {
+  return parseRoomMarker(out) ?? parseMention(out, participants, speaker);
+}
+
 export function hasAskMarker(out: string): boolean {
   const m = parseRoomMarker(out);
   return m !== undefined && m.verb === "ask-peer";
@@ -101,13 +132,13 @@ export class MarkerGovernor implements Governor {
       return { activate: [], speakerEventId: "", mode: "", reason: "budget exhausted" };
     if (s.depth >= s.maxDepth)
       return { activate: [], speakerEventId: "", mode: "", reason: "peer depth cap" };
-    // Most recent unreacted output carrying a marker wins; scanning from
+    // Most recent unreacted output carrying a trigger wins; scanning from
     // the end keeps repeat rounds fresh instead of re-injecting the same
     // event.
     for (let i = s.settled.length - 1; i >= 0; i--) {
       const a = s.settled[i]!;
       if (s.reactedTo.has(a.eventId)) continue;
-      const marker = parseRoomMarker(a.finalOutput);
+      const marker = roomTrigger(a.finalOutput, s.participants, a.participant);
       if (!marker || marker.verb !== "ask-peer") continue;
       const targets = markerTargets(marker, s.participants, a.participant);
       if (targets.length === 0) continue;
@@ -115,11 +146,12 @@ export class MarkerGovernor implements Governor {
         marker.arg === "" || marker.arg.toLowerCase() === "all"
           ? "all peers"
           : `→ ${targets.join(",")}`;
+      const via = parseRoomMarker(a.finalOutput) ? "marker" : "mention";
       return {
         activate: targets,
         speakerEventId: a.eventId,
         mode: "react",
-        reason: `ask-peer marker in ${a.eventId} (${scope})`,
+        reason: `ask-peer ${via} in ${a.eventId} (${scope})`,
         // Relay semantics: each reactor sees the peers that answered
         // before it in the round.
         parallel: false,
