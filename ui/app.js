@@ -211,11 +211,11 @@ function liveEl(head) {
   return state;
 }
 
-function headStream(head, delta) {
+function headStream(head, delta, replace = false) {
   const state = liveEl(head);
-  state.text += delta;
-  // Strip a partial trailing marker during streaming so the raw control
-  // syntax never flashes; complete markers pass through to bodyWithBadges.
+  // Replace semantics: the server recomputed the full text (a whole-block
+  // change broke the prefix chain); reset instead of appending.
+  state.text = replace ? delta : state.text + delta;
   const partial = /<\|room:[^|>]*$/.exec(state.text);
   const visible = partial ? state.text.slice(0, partial.index) : state.text;
   state.el.querySelector(".body").innerHTML = bodyWithBadges(visible, head, false);
@@ -556,7 +556,7 @@ function connect() {
         renderEvent(data.event);
         break;
       case "head_stream":
-        headStream(data.head, data.delta);
+        headStream(data.head, data.delta, data.replace === true);
         break;
       case "head_tool":
         headTool(data.head, data.callId, data.tool, data.state);

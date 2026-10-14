@@ -90,14 +90,55 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
     ctx: Context,
   ): Promise<void> {
     const stream = await watchEvents(app.rc.harness, conversationId, ctx);
+    // Live text accounting: text blocks can change whole (text_start with
+    // initial content, block replacements, whole-message swaps) — dropping
+    // those truncates the head's streamed output at the client. Reconstruct
+    // the full text from segments and broadcast prefix deltas; when the new
+    // text is not an extension of the old, send a replace.
+    let base = ""; // text of completed messages in the current run
+    let segments = new Map<number, string>();
+    let lastFull = "";
+    const concat = () =>
+      [...segments.entries()]
+        .toSorted(([a], [b]) => a - b)
+        .map(([, t]) => t)
+        .join("");
+    const pushText = (full: string) => {
+      if (full === lastFull) return;
+      if (full.startsWith(lastFull))
+        broadcast("head_stream", { head: headName, delta: full.slice(lastFull.length) });
+      else broadcast("head_stream", { head: headName, delta: full, replace: true });
+      lastFull = full;
+    };
     void stream.start(async (events) => {
       for (const ev of events) {
         switch (ev.type) {
+          case "message_start": {
+            base += concat();
+            segments = new Map();
+            break;
+          }
           case "message_update": {
             for (const ch of ev.changes) {
               if (ch.type === "text_delta")
-                broadcast("head_stream", { head: headName, delta: ch.delta });
+                segments.set(ch.contentIndex, (segments.get(ch.contentIndex) ?? "") + ch.delta);
+              else if (ch.type === "text_start" && ch.block.type === "text")
+                segments.set(ch.contentIndex, ch.block.text || "");
+              else if (ch.type === "block" && ch.block.type === "text")
+                segments.set(ch.contentIndex, ch.block.text ?? "");
+              else if (ch.type === "message") {
+                segments = new Map<number, string>(
+                  ch.message.content
+                    .map((b, i): [number, string] => [i, b.type === "text" ? b.text || "" : ""])
+                    .filter(([, t]) => t !== ""),
+                );
+              }
             }
+            pushText(base + concat());
+            break;
+          }
+          case "message_end": {
+            pushText(base + concat());
             break;
           }
           case "tool_execution_start":
