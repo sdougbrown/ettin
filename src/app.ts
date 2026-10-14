@@ -164,31 +164,38 @@ export class EttinApp {
         .map((t) => (t.record.input as { humanEventId?: string } | undefined)?.humanEventId)
         .filter((id): id is string => typeof id === "string"),
     );
-    const next = events.find(
-      (e) => e.kind === "human_input" && e.meta?.queued && !withTasks.has(e.id),
-    );
-    if (!next) return true;
-    const targets = String(next.meta?.targets ?? "")
-      .split(",")
-      .filter(Boolean);
     const rc = this.rc;
     const turnTask = this.turnTask;
-    await rc.room.commit(async (tx) => {
+    const targetsFor = (ev: RoomEvent) => {
+      const parsed = String(ev.meta?.targets ?? "")
+        .split(",")
+        .filter(Boolean);
+      return parsed.length > 0 ? parsed : this.heads.list().map((h) => h.name);
+    };
+    // The live-task set above cannot prove a queued input was processed: a
+    // SETTLED turn is terminal and invisible to inspect(), so matching by
+    // humanEventId re-creates the same turn forever (observed: 7 duplicate
+    // turns for one input). The drainedSeq marker in the RoomDoc is the
+    // durable processed-boundary, checked and advanced inside the same
+    // atomic commit that creates the task.
+    return rc.room.commit(async (tx) => {
       const doc = await tx.doc(RoomDoc, rc.room.id);
+      const drained = doc.drainedSeq ?? 0;
+      const next = events.find(
+        (e) =>
+          e.kind === "human_input" && e.meta?.queued && e.seq > drained && !withTasks.has(e.id),
+      );
+      if (!next) return true;
       const turnNo = doc.seq + 1;
       doc.seq += 1;
+      doc.drainedSeq = next.seq;
       await tx.createTask(
         turnTask,
-        {
-          humanEventId: next.id,
-          humanText: next.body,
-          targets: targets.length > 0 ? targets : this.heads.list().map((h) => h.name),
-          turnNo,
-        },
+        { humanEventId: next.id, humanText: next.body, targets: targetsFor(next), turnNo },
         { ownership: { kind: "conversation" } },
       );
+      return true;
     }, ctx);
-    return true;
   }
 
   async events(ctx: Context = BACKGROUND_CONTEXT): Promise<RoomEvent[]> {

@@ -224,6 +224,15 @@ const turn5 = (await app.events()).filter(
   (e) => e.kind === "head_output" && e.body === "Queued reply from a.",
 );
 if (turn5.length !== 1) throw new Error("drained queued input never produced its turn output");
+// Regression: re-draining after the turn settled must NOT re-create it —
+// terminal tasks are invisible to inspect(), so the drain needs a durable
+// processed marker (RoomDoc.drainedSeq), or the same input loops forever.
+await app.drainPending();
+for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 100));
+const turn5Again = (await app.events()).filter(
+  (e) => e.kind === "head_output" && e.body === "Queued reply from a.",
+);
+if (turn5Again.length !== 1) throw new Error("drain re-created a settled queued turn");
 
 turn = 6;
 // Turn 6: an untargeted follow-up after a single-head turn routes to that

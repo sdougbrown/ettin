@@ -52,13 +52,19 @@ export const RoomEventEntry = defineEntry<RoomEvent>("ettin.event");
 export const RoomDoc = defineDoc<{
   seq: number;
   counts: Record<string, number>;
+  /** Seq of the last queued human input whose turn was created by
+   * drainPending. Makes the drain idempotent across restarts: a settled
+   * turn task is invisible to harness.inspect (terminal tasks aren't
+   * live), so without this marker the drain re-creates the same turn
+   * forever. Older docs predate this field; readers default to 0. */
+  drainedSeq?: number;
 }>({
   kind: "ettin.room",
   version: 1,
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ seq: 0, counts: {} }),
+  initial: () => ({ seq: 0, counts: {}, drainedSeq: 0 }),
 });
 
 export type MutationRecord = { head: string; path: string; at: number };
