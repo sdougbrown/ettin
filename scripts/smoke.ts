@@ -65,6 +65,8 @@ const headA = scriptedFaux("faux-head-a", [
   "Ping received.\n@b", // turn 4: lone-line mention triggers a react round
   "Queued reply from a.", // turn 5: drained queued input
   "Happy to help.", // turn 6: last-responder routed continuation
+  "On it.\n<|room: ask-peer | b|>", // turn 7: a answers, then pings b (react round)
+  "Still on it.", // turn 8: untargeted follow-up routes to a despite b's react
 ]);
 // Serial react rounds are relays: b's prompt is rebuilt after a settles, so
 // it must carry a's fan-out output. Captured by the response factory below.
@@ -80,6 +82,7 @@ const headB = scriptedFaux("faux-head-b", [
   "This is aligned <|room: ask-peer|> inline. // turn 2: embedded in prose — ignored",
   "Confirmed, done.", // turn 3: no marker anywhere,
   "Mention heard.", // turn 4 react: triggered by a's bare "@b" mention
+  "Heard from a.", // turn 7 react: triggered by a's ask-peer marker
 ]);
 
 const headC = scriptedFaux("faux-head-c", [
@@ -238,6 +241,28 @@ const turn6Outputs = turn6.filter((e) => e.kind === "head_output");
 if (turn6Outputs.length !== 1 || turn6Outputs[0]!.author !== "a")
   throw new Error(
     `turn 6 should activate only a: ${JSON.stringify(turn6Outputs.map((e) => e.author))}`,
+  );
+
+// Turn 7: a answers, then pings b → b joins a react round. Turn 8: an
+// untargeted follow-up must STILL route to a (last-responder), because b's
+// react-round participation must not inflate lastResponders to {a, b}.
+turn = 7;
+await app.say("now do it");
+await waitForReturnToHuman();
+turn = 8;
+await app.say("still on track?");
+await waitForReturnToHuman();
+const all8 = await app.events();
+const human8 = all8.find((e) => e.id === "human8");
+const turn8 = all8.filter((e) => human8 && e.seq >= human8.seq);
+if (!turn8.some((e) => e.kind === "governor" && e.body.includes("continuation: a carried")))
+  throw new Error(
+    `turn 8 should still route to a despite b's react round: ${JSON.stringify(turn8.map((e) => e.body))}`,
+  );
+const turn8Primary = turn8.filter((e) => e.kind === "head_output" && e.meta?.mode !== "react");
+if (turn8Primary.length !== 1 || turn8Primary[0]!.author !== "a")
+  throw new Error(
+    `turn 8 should activate only a as primary: ${JSON.stringify(turn8Primary.map((e) => e.author))}`,
   );
 
 const all = await app.events();

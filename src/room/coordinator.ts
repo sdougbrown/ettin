@@ -159,6 +159,10 @@ export function lastResponderAuthors(events: RoomEvent[], humanEventId: string):
     if (events[i]!.kind === "governor" && events[i]!.body.startsWith("fanout ")) start = i + 1;
   }
 
+  // Count only PRIMARY actors — a head that answered the fan-out, not one that
+  // joined a later react round. React participants would otherwise inflate the
+  // list (a head answers your @name question, then pings peers → 3 actors),
+  // which would defeat last-responder continuation in a chatty room.
   const authors: string[] = [];
 
   for (let i = start; i < events.length; i++) {
@@ -166,7 +170,8 @@ export function lastResponderAuthors(events: RoomEvent[], humanEventId: string):
 
     if (ev.id === humanEventId) break;
 
-    if (ev.kind === "head_output" && !authors.includes(ev.author)) authors.push(ev.author);
+    if (ev.kind === "head_output" && ev.meta?.mode !== "react" && !authors.includes(ev.author))
+      authors.push(ev.author);
   }
 
   return authors;
