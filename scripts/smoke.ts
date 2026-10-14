@@ -17,6 +17,7 @@ import {
   fauxProvider,
   fauxText,
   type FauxProviderHandle,
+  type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { HeadModelChoice, ModelSource } from "../src/models.ts";
 import { mkdirSync, rmSync } from "node:fs";
@@ -30,7 +31,7 @@ mkdirSync(`${TMP}/data`, { recursive: true });
 /** One scripted faux provider per head: deterministic by construction. */
 function scriptedFaux(
   id: string,
-  script: string[],
+  script: (string | FauxResponseStep)[],
 ): { choice: HeadModelChoice; handle: FauxProviderHandle } {
   const faux = fauxProvider({
     provider: id,
@@ -45,7 +46,11 @@ function scriptedFaux(
       },
     ],
   });
-  faux.setResponses(script.map((text) => fauxAssistantMessage([fauxText(text)])));
+  faux.setResponses(
+    script.map((text) =>
+      typeof text === "string" ? fauxAssistantMessage([fauxText(text)]) : text,
+    ),
+  );
   return {
     choice: { provider: id, modelId: "scripted", label: id },
     handle: faux,
@@ -58,21 +63,42 @@ const headA = scriptedFaux("faux-head-a", [
   "Confirmed.\n<|room: ask-peer | a|>", // turn 2: self-target, filtered by no-echo
   "Standing by.", // turn 3: no marker
 ]);
+// Serial react rounds are relays: b's prompt is rebuilt after a settles, so
+// it must carry a's fan-out output. Captured by the response factory below.
+let bReactSawARelayout = false;
+let cReactSawB = false;
 const headB = scriptedFaux("faux-head-b", [
   "head b ready.", // bootstrap
-  "Peer A's bucket undercounts bursts; counterproposal: leaky bucket.", // react
-  "Aligned, nothing to add.", // turn 1 react
+  "Peer A's bucket undercounts bursts; counterproposal: leaky bucket.", // turn 1 fanout
+  (ctx) => {
+    bReactSawARelayout = JSON.stringify(ctx).includes("gate by token bucket");
+    return fauxAssistantMessage([fauxText("Aligned, nothing to add.")]);
+  }, // turn 1 react (relay prompt assertion runs here)
   "This is aligned <|room: ask-peer|> inline. // turn 2: embedded in prose — ignored",
   "Confirmed, done.", // turn 3: no marker anywhere,
+]);
+
+const headC = scriptedFaux("faux-head-c", [
+  "head c ready.", // bootstrap
+  "Quota per client with a burst allowance.", // turn 1 fanout
+  (ctx) => {
+    // Serial relay: c reacts after b in the same round, so c's prompt must
+    // carry b's react output (which is not the round speaker's body).
+    cReactSawB = JSON.stringify(ctx).includes("Aligned, nothing to add");
+    return fauxAssistantMessage([fauxText("Nothing further.")]);
+  },
+  "No concerns.", // turn 2: marker-free
+  "Confirmed, done.", // turn 3: marker-free
 ]);
 
 const models = createModels();
 models.setProvider(headA.handle.provider);
 models.setProvider(headB.handle.provider);
+models.setProvider(headC.handle.provider);
 const modelSource: ModelSource = {
   kind: "faux",
   models,
-  choices: [headA.choice, headB.choice],
+  choices: [headA.choice, headB.choice, headC.choice],
   faux: headA.handle,
 };
 
@@ -92,11 +118,12 @@ await app.open();
 // Each head pinned to its own scripted provider.
 await app.addHead("a", "faux-head-a/scripted");
 await app.addHead("b", "faux-head-b/scripted");
+await app.addHead("c", "faux-head-c/scripted");
 
 const afterBootstrap = await app.events();
 const bootOutputs = afterBootstrap.filter((e) => e.kind === "head_output");
-if (bootOutputs.length !== 2)
-  throw new Error(`expected 2 bootstrap outputs, got ${bootOutputs.length}`);
+if (bootOutputs.length !== 3)
+  throw new Error(`expected 3 bootstrap outputs, got ${bootOutputs.length}`);
 
 // Turn 1: fan-out, then a's marker triggers a react round for b.
 await app.say("How should we rate-limit the API?");
@@ -111,10 +138,10 @@ const events = await app.events();
 const human = events.find((e) => e.kind === "human_input");
 if (!human) throw new Error("no human_input recorded");
 const outputs = events.filter((e) => e.kind === "head_output");
-// 2 bootstrap + 2 fan-out + 1 react
-if (outputs.length !== 5) {
+// 3 bootstrap + 3 fan-out + 2 react (b, then c in serial relay order)
+if (outputs.length !== 8) {
   throw new Error(
-    `expected 5 head outputs (2 bootstrap, 2 fanout, 1 react), got ${outputs.length}:\n` +
+    `expected 8 head outputs (3 bootstrap, 3 fanout, 2 react), got ${outputs.length}:\n` +
       events.map((e) => `[${e.id}] ${e.kind}: ${e.body.slice(0, 80)}`).join("\n"),
   );
 }
@@ -122,7 +149,9 @@ if (outputs.length !== 5) {
 const aFanout = outputs.find((e) => e.author === "a" && e.meta?.mode === "answer");
 const bFanout = outputs.find((e) => e.author === "b" && e.meta?.mode === "answer");
 const bReact = outputs.find((e) => e.author === "b" && e.meta?.mode === "react");
-if (!aFanout || !bFanout || !bReact) throw new Error("missing fan-out or react activations");
+const cReact = outputs.find((e) => e.author === "c" && e.meta?.mode === "react");
+if (!aFanout || !bFanout || !bReact || !cReact)
+  throw new Error("missing fan-out or react activations");
 
 if (aFanout.parents?.[0] !== human.id) throw new Error(`a fan-out parent should be ${human.id}`);
 if (bFanout.parents?.[0] !== human.id) throw new Error(`b fan-out parent should be ${human.id}`);
@@ -130,6 +159,12 @@ if (!bReact.parents?.includes(aFanout.id))
   throw new Error(`b react should reference a's output ${aFanout.id}`);
 if (bReact.depth !== 1) throw new Error(`b react depth should be 1, got ${bReact.depth}`);
 if (!aFanout.body.includes("<|room: ask-peer|>")) throw new Error("a's output lost its marker");
+if (!bReactSawARelayout)
+  throw new Error("serial relay: b's react prompt must include a's settled fanout output");
+if (!cReactSawB)
+  throw new Error(
+    "serial relay: c's react prompt must include b's settled react output (the relay chain)",
+  );
 
 const governorEvents = events.filter((e) => e.kind === "governor");
 if (!governorEvents.some((e) => e.body.includes("ask-peer marker"))) {
