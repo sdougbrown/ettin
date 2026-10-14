@@ -106,12 +106,33 @@ async function main(): Promise<void> {
   await app.open();
 
   // Bootstrap heads: --head name=model (repeatable, per-head model) wins
-  // over --heads (bare names on the default model).
+  // over --heads (bare names on the default model). An avenor head is
+  // declared as name=roster:<file>/<entry> (e.g. --head coder=roster:pi/horse)
+  // — the roster file resolves relative to ~/.botfiles/config/rosters unless
+  // an absolute path is given.
   if (values.head && values.head.length > 0) {
     for (const spec of values.head) {
       const [name, model] = spec.split("=");
       if (!name || !model) throw new Error(`--head must be name=model, got "${spec}"`);
-      await app.addHead(name.trim().toLowerCase(), model.trim());
+      if (model.startsWith("roster:")) {
+        const ref = model.slice("roster:".length);
+        const slash = ref.indexOf("/");
+        if (slash <= 0)
+          throw new Error(`--head roster ref must be roster:<file>/<entry>, got "${spec}"`);
+        const rosterFile = ref.slice(0, slash).endsWith(".json")
+          ? ref.slice(0, slash)
+          : `${ref.slice(0, slash)}.json`;
+        const entry = ref.slice(slash + 1);
+        const base = join(homedir(), ".botfiles/config/rosters");
+        const path = rosterFile.startsWith("/") ? rosterFile : `${base}/${rosterFile}`;
+        await app.registerAvenorHead(name.trim().toLowerCase(), {
+          kind: "avenor",
+          roster_entry: entry,
+          roster_file: path,
+        });
+      } else {
+        await app.addHead(name.trim().toLowerCase(), model.trim());
+      }
     }
   } else {
     const names = values

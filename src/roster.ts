@@ -145,7 +145,7 @@ export function readRosterEntry(text: string, entryName: string): Record<string,
   if (!isObject(entries)) throw new ConfigError("roster: expected an object of entries");
   const entry = entries[entryName];
   if (!isObject(entry)) throw new ConfigError(`roster: no entry "${entryName}"`);
-  const allowed = new Set(["backend", "agent", "model"]);
+  const allowed = new Set(["backend", "agent", "model", "thinking"]);
   for (const key of Object.keys(entry)) {
     if (!allowed.has(key))
       throw new ConfigError(

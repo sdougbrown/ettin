@@ -147,6 +147,44 @@ export class EttinApp {
     harness.resume();
   }
 
+  /** Register an avenor-driven head: resolve its roster entry (identity
+   * only) and announce it in the room log. Idempotent by name. */
+  async registerAvenorHead(
+    name: string,
+    def: AvenorHeadDef,
+    ctx: Context = BACKGROUND_CONTEXT,
+  ): Promise<void> {
+    if (this.avenorHeads.has(name)) return;
+    if (!this.avenor) {
+      throw new Error(`head "${name}" is kind "avenor" but no --avenor-socket is configured`);
+    }
+    let entry: Record<string, unknown> = {};
+    if (def.roster_file) {
+      try {
+        entry = readRosterEntry(
+          (await import("node:fs")).readFileSync(def.roster_file, "utf8"),
+          def.roster_entry,
+        );
+      } catch (err) {
+        throw new Error(`roster for head "${name}": ${String(err)}`);
+      }
+    }
+    this.avenorHeads.set(name, { def, entry });
+    await appendRoomEvent(
+      this.rc,
+      {
+        author: "room",
+        kind: "system",
+        body: `head ${name} joined via avenor (roster entry ${def.roster_entry}${
+          def.paddock_profile ? `, paddock ${def.paddock_profile}` : ""
+        })`,
+        visibility: "room",
+        depth: 0,
+      },
+      ctx,
+    );
+  }
+
   /** Apply the room head-definition file (if configured): durable heads are
    * ensured like UI-added ones; avenor heads are registered (identity from
    * the roster file) and announced. Absent config → no-op. */
@@ -170,28 +208,15 @@ export class EttinApp {
         if (!this.avenor) {
           throw new Error(`head "${name}" is kind "avenor" but no --avenor-socket is configured`);
         }
-        let entry: Record<string, unknown> = {};
-        if (def.roster_file) {
-          try {
-            entry = readRosterEntry(
-              (await import("node:fs")).readFileSync(def.roster_file, "utf8"),
-              def.roster_entry,
-            );
-          } catch (err) {
-            throw new Error(`roster for head "${name}": ${String(err)}`);
-          }
-        }
-        this.avenorHeads.set(name, { def, entry });
-        await appendRoomEvent(
-          this.rc,
+        await this.registerAvenorHead(
+          name,
           {
-            author: "room",
-            kind: "system",
-            body: `head ${name} joined via avenor (roster entry ${def.roster_entry}${
-              def.paddock_profile ? `, paddock ${def.paddock_profile}` : ""
-            })`,
-            visibility: "room",
-            depth: 0,
+            kind: "avenor",
+            roster_entry: def.roster_entry,
+            roster_file: def.roster_file,
+            paddock_profile: def.paddock_profile,
+            workspace: def.workspace,
+            instructions: def.instructions,
           },
           ctx,
         );
