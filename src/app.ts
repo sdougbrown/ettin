@@ -20,6 +20,7 @@ import {
   RoomDoc,
   RoomEventEntry,
   roomEvents,
+  appendRoomEvent,
   type HeadRecord,
   type RoomContext,
   type RoomEvent,
@@ -28,6 +29,8 @@ import { MarkerGovernor, type Governor } from "./room/governor.ts";
 import { defineTurnTask } from "./room/coordinator.ts";
 import { HeadManager } from "./heads.ts";
 import { loadModels, type ModelSource } from "./models.ts";
+import { AvenorClient } from "./avenor.ts";
+import { parseRoomConfig, readRosterEntry, type AvenorHeadDef, type RoomConfig } from "./roster.ts";
 
 export interface AppOptions {
   prefer?: "config" | "faux";
@@ -43,6 +46,17 @@ export interface AppOptions {
   maxAuto: number;
   excerptLimit: number;
   roomRef: string;
+  /** Avenor stable control socket (enables kind: "avenor" heads). */
+  avenorSocket?: string;
+  /** Path to the room head-definition file (room.json). */
+  roomConfigPath?: string;
+}
+
+/** One registered avenor-driven head: room-only definition + resolved
+ * roster identity (backend/agent/model live in the roster file). */
+export interface AvenorHeadRegistration {
+  def: AvenorHeadDef;
+  entry: Record<string, unknown>;
 }
 
 export class EttinApp {
@@ -51,6 +65,13 @@ export class EttinApp {
   turnTask!: ReturnType<typeof defineTurnTask>;
   governor: Governor = new MarkerGovernor();
   models!: ModelSource;
+  /** Present when --avenor-socket is set; lazily connects. */
+  avenor: AvenorClient | null = null;
+  /** kind: "avenor" heads from the room config, by head name. These do not
+   * participate in turns yet — coordinator activation wiring is the next
+   * increment. Durable heads listed in the config ARE activated on open. */
+  avenorHeads = new Map<string, AvenorHeadRegistration>();
+  roomConfig: RoomConfig | null = null;
 
   constructor(public options: AppOptions) {}
 
@@ -86,6 +107,11 @@ export class EttinApp {
       excerptLimit: this.options.excerptLimit,
     });
 
+    // Avenor heads: present only when a control socket is configured.
+    if (this.options.avenorSocket) {
+      this.avenor = new AvenorClient({ socketPath: this.options.avenorSocket, name: "avenor" });
+    }
+
     // Registry: arbiter + room tools for heads, the turn task for the
     // coordinator. Extension objects are built against the live context.
     this.heads.installExtensions();
@@ -104,9 +130,62 @@ export class EttinApp {
 
     // Reattach to any heads a previous process created.
     await this.heads.load(ctx);
+    await this.applyRoomConfig(ctx);
     // Start the task scheduler: pending turn tasks resume immediately, and
     // reattached heads (no bootstrap turn) still get a running scheduler.
     harness.resume();
+  }
+
+  /** Apply the room head-definition file (if configured): durable heads are
+   * ensured like UI-added ones; avenor heads are registered (identity from
+   * the roster file) and announced. Absent config → no-op. */
+  private async applyRoomConfig(ctx: Context): Promise<void> {
+    if (!this.options.roomConfigPath) return;
+    let raw: string;
+    try {
+      raw = (await import("node:fs")).readFileSync(this.options.roomConfigPath, "utf8");
+    } catch (err) {
+      throw new Error(`room config ${this.options.roomConfigPath} unreadable: ${String(err)}`);
+    }
+    this.roomConfig = parseRoomConfig(raw);
+    for (const [name, def] of Object.entries(this.roomConfig.heads)) {
+      if (this.heads.list().some((h) => h.name === name)) continue;
+      if (def.kind === "durable") {
+        if (!def.model) continue; // model required to create a durable head
+        const provider = def.model.split("/")[0] ?? "";
+        const modelId = def.model.split("/")[1] ?? def.model;
+        await this.heads.ensureHead(name, { provider, modelId, label: def.model }, ctx);
+      } else {
+        if (!this.avenor) {
+          throw new Error(`head "${name}" is kind "avenor" but no --avenor-socket is configured`);
+        }
+        let entry: Record<string, unknown> = {};
+        if (def.roster_file) {
+          try {
+            entry = readRosterEntry(
+              (await import("node:fs")).readFileSync(def.roster_file, "utf8"),
+              def.roster_entry,
+            );
+          } catch (err) {
+            throw new Error(`roster for head "${name}": ${String(err)}`);
+          }
+        }
+        this.avenorHeads.set(name, { def, entry });
+        await appendRoomEvent(
+          this.rc,
+          {
+            author: "room",
+            kind: "system",
+            body: `head ${name} joined via avenor (roster entry ${def.roster_entry}${
+              def.paddock_profile ? `, paddock ${def.paddock_profile}` : ""
+            })`,
+            visibility: "room",
+            depth: 0,
+          },
+          ctx,
+        );
+      }
+    }
   }
 
   /** Operator input → room log entry + durable turn task, in one commit.

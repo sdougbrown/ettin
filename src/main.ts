@@ -37,6 +37,8 @@ const { values } = parseArgs({
     thinking: { type: "string", default: "off" },
     heads: { type: "string", default: "a,b" },
     head: { type: "string", multiple: true },
+    "avenor-socket": { type: "string", default: "" },
+    "room-config": { type: "string", default: "" },
   },
 });
 
@@ -98,6 +100,8 @@ async function main(): Promise<void> {
     governor,
     turnTimeoutMs: parseDuration(values["turn-deadline"]!),
     roomRef: "room_log tool (the shared room record)",
+    avenorSocket: values["avenor-socket"] || undefined,
+    roomConfigPath: values["room-config"] || undefined,
   });
   await app.open();
 
