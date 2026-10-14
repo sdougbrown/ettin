@@ -90,13 +90,35 @@ export interface AvenorEvent {
   [key: string]: unknown;
 }
 
+/** The client surface the coordinator consumes. Duck-typed so a faux
+ * implementation can drive the smoke test without a live supervisor. */
+export interface AvenorControl {
+  subscribe(): Promise<void>;
+  onEvent(fn: (ev: AvenorEvent) => void): () => void;
+  spawn(params: SpawnParams): Promise<Spawned>;
+  list(): Promise<RuntimeStatus[]>;
+  status(runtimeId: string): Promise<RuntimeStatus>;
+  result(runtimeId: string): Promise<Record<string, unknown>>;
+  prompt(runtimeId: string, text: string): Promise<void>;
+  cancel(runtimeId: string): Promise<void>;
+  answerPermission(
+    runtimeId: string,
+    requestId: string,
+    optionId: string,
+    message?: string,
+  ): Promise<void>;
+}
+
+/** Phases meaning the runtime will not produce more output without a prompt. */
+export const SETTLED_PHASES = new Set(["done", "parked", "idle", "completed", "finished"]);
+
 export interface AvenorClientOptions {
   socketPath: string;
   /** Optional label used in error messages. */
   name?: string;
 }
 
-export class AvenorClient {
+export class AvenorClient implements AvenorControl {
   private socketPath: string;
   private name: string;
   private socket: Socket | null = null;

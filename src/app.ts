@@ -50,6 +50,8 @@ export interface AppOptions {
   avenorSocket?: string;
   /** Path to the room head-definition file (room.json). */
   roomConfigPath?: string;
+  /** Injected avenor client (tests); overrides avenorSocket. */
+  avenorClient?: AvenorClient;
 }
 
 /** One registered avenor-driven head: room-only definition + resolved
@@ -65,8 +67,11 @@ export class EttinApp {
   turnTask!: ReturnType<typeof defineTurnTask>;
   governor: Governor = new MarkerGovernor();
   models!: ModelSource;
-  /** Present when --avenor-socket is set; lazily connects. */
+  /** Present when --avenor-socket is set (or a client is injected for
+   * tests); lazily connects. */
   avenor: AvenorClient | null = null;
+  /** Per-head live avenor runtime id, for prompt reuse across turns. */
+  avenorSessions = new Map<string, string>();
   /** kind: "avenor" heads from the room config, by head name. These do not
    * participate in turns yet — coordinator activation wiring is the next
    * increment. Durable heads listed in the config ARE activated on open. */
@@ -107,10 +112,13 @@ export class EttinApp {
       excerptLimit: this.options.excerptLimit,
     });
 
-    // Avenor heads: present only when a control socket is configured.
-    if (this.options.avenorSocket) {
-      this.avenor = new AvenorClient({ socketPath: this.options.avenorSocket, name: "avenor" });
-    }
+    // Avenor heads: present only when a control socket is configured (or a
+    // client is injected for tests).
+    this.avenor =
+      this.options.avenorClient ??
+      (this.options.avenorSocket
+        ? new AvenorClient({ socketPath: this.options.avenorSocket, name: "avenor" })
+        : null);
 
     // Registry: arbiter + room tools for heads, the turn task for the
     // coordinator. Extension objects are built against the live context.
@@ -119,6 +127,9 @@ export class EttinApp {
     this.turnTask = defineTurnTask({
       rc: this.rc,
       governor: this.governor,
+      avenor: this.avenor
+        ? { client: this.avenor, heads: this.avenorHeads, sessions: this.avenorSessions }
+        : undefined,
       maxDepth: this.options.maxDepth,
       maxAuto: this.options.maxAuto,
       excerptLimit: this.options.excerptLimit,

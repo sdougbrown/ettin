@@ -34,6 +34,7 @@ import {
 } from "./room.ts";
 import type { Activation, Decision, Governor } from "./governor.ts";
 import { agentName, channelWrap, fanoutPrompt, peerPrompt } from "./projection.ts";
+import { SETTLED_PHASES, type AvenorControl } from "../avenor.ts";
 
 export interface TurnInput {
   /** Room log event id of the human input that woke this turn (H17). */
@@ -48,6 +49,9 @@ interface PromptRef {
   head: string;
   requestId: string;
   prompt: string;
+  /** Live avenor runtime id, persisted so a restart reattaches instead of
+   * spawning a duplicate session. */
+  runtimeId?: string;
 }
 
 interface Round {
@@ -102,6 +106,15 @@ export interface CoordinatorDeps {
   turnTimeoutMs: number;
   workspace: string;
   governor: Governor;
+  /** Avenor-backed heads (kind: "avenor"). Absent → all heads durable. */
+  avenor?: {
+    client: AvenorControl;
+    heads: Map<
+      string,
+      { def: import("../roster.ts").AvenorHeadDef; entry: Record<string, unknown> }
+    >;
+    sessions: Map<string, string>;
+  };
   maxDepth: number;
   maxAuto: number;
   excerptLimit: number;
@@ -198,23 +211,22 @@ export function defineTurnTask(deps: CoordinatorDeps) {
       .map((e) => e.data as RoomEvent);
   }
 
-  async function finalize<C extends TurnCheckpoint>(
+  /** A settled activation, normalized across head kinds. */
+  type HeadSettled =
+    | { status: "answered"; stopReason: string; finalOutput: string }
+    | { status: "unanswered"; reason: string };
+
+  /** Convert a durable submission record into a HeadSettled: the answer
+   * entry lives in the head's conversation; read it through a table-scoped
+   * transaction (the task's conversation is the room). The commit callback
+   * returns undefined: in a task, a returned value is the next checkpoint,
+   * not a result. */
+  const settledFromDurable = async (
     runtime: TaskRuntime<TurnInput, TurnCheckpoint, TurnResult, object>,
-    ref: PromptRef,
     settledRec: SettledSubmissionRecord,
-    mode: string,
-    depth: number,
-    parents: string[],
-    cp: C,
     ctx: Context,
-  ): Promise<C> {
-    let stopReason = "";
-    let finalOutput = "";
+  ): Promise<HeadSettled> => {
     if (settledRec.status === "done" && settledRec.answer !== undefined) {
-      // The answer entry lives in the head's conversation; read it through a
-      // table-scoped transaction (the task's conversation is the room). The
-      // commit callback returns undefined: in a task, a returned value is the
-      // next checkpoint, not a result.
       let answer: EntryRecord | undefined;
       await runtime.commit(async (tx) => {
         answer = await tx.entry(settledRec.answer);
@@ -223,8 +235,26 @@ export function defineTurnTask(deps: CoordinatorDeps) {
       const msg = answer?.model?.[0] as
         | { stopReason?: string; content?: { type: string; text?: string }[] }
         | undefined;
-      stopReason = msg?.stopReason ?? "";
-      finalOutput = textOf(msg);
+      return { status: "answered", stopReason: msg?.stopReason ?? "", finalOutput: textOf(msg) };
+    }
+    return { status: "unanswered", reason: settledRec.reason ?? "unknown" };
+  };
+
+  async function finalize<C extends TurnCheckpoint>(
+    runtime: TaskRuntime<TurnInput, TurnCheckpoint, TurnResult, object>,
+    ref: PromptRef,
+    settledRec: HeadSettled,
+    mode: string,
+    depth: number,
+    parents: string[],
+    cp: C,
+    ctx: Context,
+  ): Promise<C> {
+    let stopReason = "";
+    let finalOutput = "";
+    if (settledRec.status === "answered") {
+      stopReason = settledRec.stopReason;
+      finalOutput = settledRec.finalOutput;
     } else {
       stopReason = `unanswered: ${settledRec.reason}`;
     }
@@ -281,12 +311,24 @@ export function defineTurnTask(deps: CoordinatorDeps) {
 
     type Pending = {
       ref: PromptRef;
-      submission: Awaited<ReturnType<ConversationHandle["submit"]>>;
-      waitPromise: Promise<SettledSubmissionRecord>;
+      waitPromise: Promise<HeadSettled>;
       timedOut: boolean;
-      timer: Promise<SettledSubmissionRecord>;
+      timer: Promise<HeadSettled>;
+      abort: (ctx: Context) => Promise<void>;
     };
-    const submitOne = async (ref: PromptRef): Promise<Pending> => {
+    const deadlineTimer = (pending: { timedOut: boolean }) => {
+      const timer: Promise<HeadSettled> = new Promise((resolve) => {
+        const t = setTimeout(() => {
+          pending.timedOut = true;
+          resolve({ status: "unanswered", reason: "turn deadline exceeded" });
+        }, turnTimeoutMs);
+        t.unref();
+      });
+      return timer;
+    };
+
+    /** Durable-head activation: submission with requestId dedup. */
+    const submitDurable = async (ref: PromptRef): Promise<Pending> => {
       const id = ids.get(ref.head);
       if (!id) throw new Error(`no conversation for head ${ref.head}`);
       const handle: ConversationHandle | undefined = await runtime.conversation(id, ctx);
@@ -297,37 +339,77 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         { type: "input", content: ref.prompt, requestId: ref.requestId },
         ctx,
       );
-      // Per-activation deadline: a hung head must not stall the room. On
-      // timeout the submission is aborted and the activation is finalized as
-      // blocked, so the governor's blocked short-circuit returns to the
-      // operator.
       const pending: Pending = {
         ref,
-        submission,
-        waitPromise: submission.wait(ctx),
+        waitPromise: submission.wait(ctx).then((r) => settledFromDurable(runtime, r, ctx)),
         timedOut: false,
-        timer: undefined as unknown as Promise<SettledSubmissionRecord>,
+        timer: deadlineTimer({ timedOut: false }),
+        abort: (c) => submission.abort(c).then(() => undefined),
       };
-      pending.timer = new Promise((resolve) => {
-        const t = setTimeout(() => {
-          pending.timedOut = true;
-          resolve({
-            status: "unanswered",
-            reason: "turn deadline exceeded",
-          } as SettledSubmissionRecord);
-        }, turnTimeoutMs);
-        t.unref();
-      });
+      pending.timer = deadlineTimer(pending);
       return pending;
     };
+
+    /** Avenor-head activation: spawn on first use, prompt on follow-ups
+     * (never interrupt_and_prompt — the queued prompt waits for the
+     * in-flight turn, per the plan). The settle is a status poll; the
+     * per-activation deadline aborts (cancels) on timeout. */
+    const submitAvenor = async (ref: PromptRef): Promise<Pending> => {
+      const av = deps.avenor!;
+      const reg = av.heads.get(ref.head);
+      if (!reg) throw new Error(`no avenor registration for head ${ref.head}`);
+      const entry = reg.entry as { backend?: string; agent?: string; model?: string };
+      let runtimeId = av.sessions.get(ref.head);
+      if (runtimeId) {
+        const st = await av.client.status(runtimeId).catch(() => null);
+        const phase = String(st?.phase ?? "");
+        if (SETTLED_PHASES.has(phase)) {
+          // Parked: queue the new prompt on the same session.
+          await av.client.prompt(runtimeId, ref.prompt).catch(() => {});
+        } else {
+          // Working: the activation is already in flight (e.g. resumed
+          // after a crash); attach to it instead of double-prompting.
+        }
+      } else {
+        const spawned = await av.client.spawn({
+          prompt: ref.prompt,
+          dir: workspace,
+          label: ref.requestId,
+          ...(entry.agent ? { agent: entry.agent } : {}),
+          ...(entry.model ? { model: entry.model } : {}),
+          ...(entry.backend ? { backend: entry.backend } : {}),
+        });
+        runtimeId = spawned.runtime_id;
+        av.sessions.set(ref.head, runtimeId);
+        ref.runtimeId = runtimeId;
+        // Persist the runtime id before waiting: a restart resumes by
+        // reattaching to this runtime instead of spawning a duplicate.
+        await runtime.commit(() => ({ status: "running" as const, checkpoint: cp }), ctx);
+      }
+      const waitPromise = waitAvenorSettled(av.client, runtimeId);
+      const pending: Pending = {
+        ref,
+        waitPromise,
+        timedOut: false,
+        timer: deadlineTimer({ timedOut: false }),
+        abort: (c) => av.client.cancel(runtimeId!).then(() => undefined),
+      };
+      pending.timer = deadlineTimer(pending);
+      return pending;
+    };
+
+    const isAvenorHead = (head: string): boolean => Boolean(deps.avenor?.heads.has(head));
+    const submitOne = (ref: PromptRef): Promise<Pending> =>
+      isAvenorHead(ref.head) ? submitAvenor(ref) : submitDurable(ref);
+
     const settleOne = async (pending: Pending): Promise<void> => {
-      const settledRec = await Promise.race([pending.waitPromise, pending.timer]);
+      const settled = await Promise.race([pending.waitPromise, pending.timer]);
       void pending.waitPromise.catch(() => {});
-      if (pending.timedOut) await pending.submission.abort(ctx).catch(() => {});
+      if (pending.timedOut) await pending.abort(ctx).catch(() => {});
       cp = await finalize(
         runtime,
         pending.ref,
-        settledRec,
+        settled,
         mode,
         depth,
         parentsOf(pending.ref),
@@ -335,6 +417,34 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         ctx,
       );
       cp = { ...cp, done: [...cp.done, pending.ref.requestId] };
+    };
+
+    /** Poll runtime status until a settled phase; resolve with the terminal
+     * reply. The deadline race in the caller bounds the wait. */
+    const waitAvenorSettled = async (
+      client: AvenorControl,
+      runtimeId: string,
+    ): Promise<HeadSettled> => {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        let st;
+        try {
+          st = await client.status(runtimeId);
+        } catch (err) {
+          return { status: "unanswered", reason: `status failed: ${String(err)}` };
+        }
+        const phase = String(st.phase ?? "");
+        if (SETTLED_PHASES.has(phase)) {
+          const res = await client.result(runtimeId).catch(() => ({ final_output: "" }));
+          return {
+            status: "answered",
+            stopReason: "",
+            finalOutput: String(res.final_output ?? ""),
+          };
+        }
+        if (phase === "error" || phase === "failed" || phase === "cancelled")
+          return { status: "unanswered", reason: `runtime ${phase}` };
+      }
     };
 
     if (parallel) {
