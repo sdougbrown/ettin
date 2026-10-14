@@ -147,6 +147,32 @@ export class EttinApp {
     harness.resume();
   }
 
+  /** All heads — durable first, then avenor — with a kind discriminator for
+   * the UI and targeting. */
+  allHeads(): Array<{ name: string; model: string; provider: string; kind: "durable" | "avenor" }> {
+    const durable = this.heads.list().map((h) => ({
+      name: h.name,
+      model: h.model,
+      provider: h.provider,
+      kind: "durable" as const,
+    }));
+    const avenor = [...this.avenorHeads.entries()].map(([name, reg]) => {
+      const entry = reg.entry as { backend?: string; model?: string };
+      return {
+        name,
+        model: entry.model ?? reg.def.roster_entry,
+        provider: `avenor/${entry.backend ?? "pi"}`,
+        kind: "avenor" as const,
+      };
+    });
+    return [...durable, ...avenor];
+  }
+
+  /** Remove an avenor head registration (durable heads use removeHead). */
+  removeAvenorHead(name: string): boolean {
+    return this.avenorHeads.delete(name);
+  }
+
   /** Register an avenor-driven head: resolve its roster entry (identity
    * only) and announce it in the room log. Idempotent by name. */
   async registerAvenorHead(
@@ -233,7 +259,7 @@ export class EttinApp {
     targets: string[] = [],
     ctx: Context = BACKGROUND_CONTEXT,
   ): Promise<{ eventId: string; taskId: number | null }> {
-    const headNames = targets.length > 0 ? targets : this.heads.list().map((h) => h.name);
+    const headNames = targets.length > 0 ? targets : this.allHeads().map((h) => h.name);
     if (headNames.length === 0) throw new Error("no heads in the room yet");
     const rc = this.rc;
     const turnTask = this.turnTask;

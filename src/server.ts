@@ -13,6 +13,7 @@ import { watchEvents } from "@earendil-works/pi-durable";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { EttinApp } from "./app.ts";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { ApprovalDoc, RoomDoc, RoomEventEntry, type RoomEvent } from "./room/room.ts";
@@ -217,7 +218,7 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
       }
       if (url.pathname === "/api/state" && req.method === "GET") {
         json(res, 200, {
-          heads: app.heads.list(),
+          heads: app.allHeads(),
           events: await app.events(),
           workspace: app.options.workspace,
         });
@@ -319,7 +320,9 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
           json(res, 400, { error: "name query param required" });
           return;
         }
-        const removed = await app.removeHead(name);
+        const removed = app.avenorHeads.has(name)
+          ? app.removeAvenorHead(name)
+          : await app.removeHead(name);
         if (!removed) {
           json(res, 404, { error: `no head named ${name}` });
           return;
@@ -333,7 +336,36 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
           json(res, 400, { error: "name is required" });
           return;
         }
-        const record = await app.addHead(body.name.trim().toLowerCase(), body.model);
+        const name = body.name.trim().toLowerCase();
+        const model = body.model ?? "";
+        // A `roster:<file>/<entry>` model spec adds an avenor-driven head.
+        if (model.startsWith("roster:")) {
+          const ref = model.slice("roster:".length);
+          const slash = ref.indexOf("/");
+          if (slash <= 0) {
+            json(res, 400, { error: `roster spec must be roster:<file>/<entry>, got "${model}"` });
+            return;
+          }
+          const rosterFile = ref.slice(0, slash).endsWith(".json")
+            ? ref.slice(0, slash)
+            : `${ref.slice(0, slash)}.json`;
+          const base = join(homedir(), ".botfiles/config/rosters");
+          const path = rosterFile.startsWith("/") ? rosterFile : `${base}/${rosterFile}`;
+          try {
+            await app.registerAvenorHead(name, {
+              kind: "avenor",
+              roster_entry: ref.slice(slash + 1),
+              roster_file: path,
+            });
+          } catch (err) {
+            json(res, 400, { error: String(err instanceof Error ? err.message : err) });
+            return;
+          }
+          const head = app.allHeads().find((h) => h.name === name)!;
+          json(res, 200, { head });
+          return;
+        }
+        const record = await app.addHead(name, model);
         await watchHead(record.name, record.conversationId, BACKGROUND_CONTEXT);
         json(res, 200, { head: record });
         return;
