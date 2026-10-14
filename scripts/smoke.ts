@@ -222,6 +222,24 @@ const turn5 = (await app.events()).filter(
 );
 if (turn5.length !== 1) throw new Error("drained queued input never produced its turn output");
 
+turn = 6;
+// Turn 6: an untargeted follow-up after a single-head turn routes to that
+// head (last-responder routing) instead of broadcasting to everyone.
+await app.say("thanks, carry on");
+await waitForReturnToHuman();
+const all6 = await app.events();
+const human6 = all6.find((e) => e.id === "human6");
+const turn6 = all6.filter((e) => human6 && e.seq >= human6.seq);
+if (!turn6.some((e) => e.kind === "governor" && e.body.includes("continuation: a carried")))
+  throw new Error(
+    `turn 6 should route to the last responder: ${JSON.stringify(turn6.map((e) => e.body))}`,
+  );
+const turn6Outputs = turn6.filter((e) => e.kind === "head_output");
+if (turn6Outputs.length !== 1 || turn6Outputs[0]!.author !== "a")
+  throw new Error(
+    `turn 6 should activate only a: ${JSON.stringify(turn6Outputs.map((e) => e.author))}`,
+  );
+
 const all = await app.events();
 const lastSeq = all.findIndex((e) => e.id === "human2") - 1;
 const endIdx = all.findIndex((e) => e.id === "human4");
