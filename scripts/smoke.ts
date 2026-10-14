@@ -64,6 +64,7 @@ const headA = scriptedFaux("faux-head-a", [
   "Standing by.", // turn 3: no marker
   "Ping received.\n@b", // turn 4: lone-line mention triggers a react round
   "Queued reply from a.", // turn 5: drained queued input
+  "Happy to help.", // turn 6: last-responder routed continuation
 ]);
 // Serial react rounds are relays: b's prompt is rebuilt after a settles, so
 // it must carry a's fan-out output. Captured by the response factory below.

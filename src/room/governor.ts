@@ -51,14 +51,17 @@ export interface Decision {
 export interface Governor {
   /** Async allowed: transport-backed governors await their API call. */
   decide(state: State): Decision | Promise<Decision>;
-  /** Execution shape for the operator fanout round, decided before any
-   * activation exists. Absent ⇒ coordinator default (parallel when the
-   * operator addressed more than one head). */
-  fanoutParallel?(input: {
+  /** Routing + execution shape for the operator fanout round, decided
+   * before any activation exists. Absent ⇒ coordinator default (targets as
+   * parsed, parallel iff more than one). `lastResponders` are the authors
+   * of the previous turn's head outputs, causal order — the hook for
+   * last-responder routing. */
+  routeFanout?(input: {
     targets: string[];
     participants: string[];
     humanInput: string;
-  }): boolean;
+    lastResponders: string[];
+  }): { targets: string[]; parallel: boolean; reason: string };
 }
 
 const MARKER_LINE = /^<\|room:\s*([a-z-]+)\s*(?:\|\s*([^|>]*?)\s*)?\|>$/i;
@@ -160,11 +163,29 @@ export class MarkerGovernor implements Governor {
     return { activate: [], speakerEventId: "", mode: "", reason: "no peer request" };
   }
 
-  /** Operator fanout: multiple addressed heads answer independently from
-   * the same snapshot (the useful default for @-broadcasts); a single
-   * target is trivially serial. */
-  fanoutParallel(input: { targets: string[] }): boolean {
-    return input.targets.length > 1;
+  /** Fanout routing: explicit targets pass through. An untargeted message
+   * continues with the head that carried the previous turn (last-responder
+   * routing — a follow-up like "ok, commit" lands on one head instead of
+   * triggering a broadcast race); with no single last responder, fan out. */
+  routeFanout(input: {
+    targets: string[];
+    participants: string[];
+    humanInput: string;
+    lastResponders: string[];
+  }): { targets: string[]; parallel: boolean; reason: string } {
+    if (input.targets.length < input.participants.length)
+      return {
+        targets: input.targets,
+        parallel: input.targets.length > 1,
+        reason: "explicit targets",
+      };
+    if (input.lastResponders.length === 1 && input.participants.length > 1)
+      return {
+        targets: [input.lastResponders[0]!],
+        parallel: false,
+        reason: `continuation: ${input.lastResponders[0]} carried the previous turn`,
+      };
+    return { targets: input.targets, parallel: true, reason: "no single last responder → fan out" };
   }
 }
 

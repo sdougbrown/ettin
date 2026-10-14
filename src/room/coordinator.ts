@@ -328,6 +328,19 @@ export function defineTurnTask(deps: CoordinatorDeps) {
     return cp;
   }
 
+  /** Authors of the head outputs that followed the previous human input —
+   * the actors of the immediately preceding turn, causal order, deduped.
+   * Empty before the first turn. */
+  function lastResponderAuthors(events: RoomEvent[], humanEventId: string): string[] {
+    const authors: string[] = [];
+    for (const ev of events) {
+      if (ev.id === humanEventId) break;
+      if (ev.kind === "human_input") authors.length = 0;
+      else if (ev.kind === "head_output" && !authors.includes(ev.author)) authors.push(ev.author);
+    }
+    return authors;
+  }
+
   /** Git working-tree fingerprint, untracked content included: mutations by
    * any tool (write tool or bash) become visible at turn boundaries. */
   function workspaceFingerprint(): string {
@@ -484,20 +497,34 @@ export function defineTurnTask(deps: CoordinatorDeps) {
           return undefined;
         }, ctx);
 
-        // Execution shape is governor policy, not a launch flag: parallel
-        // rounds prebuild every prompt from the same snapshot; serial
-        // (relay) rounds rebuild per head as earlier targets settle.
-        const parallel =
-          governor.fanoutParallel?.({
-            targets: task.input.targets,
-            participants: names,
-            humanInput: task.input.humanText,
-          }) ?? task.input.targets.length > 1;
+        // Fanout routing is governor policy: explicit targets pass through;
+        // an untargeted message continues with the previous turn's sole
+        // actor (last-responder routing) or fans out to everyone.
+        const lastResponders = lastResponderAuthors(log, task.input.humanEventId);
+        const route = governor.routeFanout?.({
+          targets: task.input.targets,
+          participants: names,
+          humanInput: task.input.humanText,
+          lastResponders,
+        }) ?? {
+          targets: task.input.targets,
+          parallel: task.input.targets.length > 1,
+          reason: "coordinator default",
+        };
+        if (route.targets.length === 0) route.targets = task.input.targets;
+        const parallel = route.parallel;
+        const fanoutTargets = route.targets;
+        await appendGovernor(
+          runtime,
+          `fanout ${fanoutTargets.join(",")} parallel=${parallel}: ${route.reason}`,
+          cp.depth,
+          ctx,
+        );
 
         if (cp.fanout.length === 0) {
           cp = {
             ...cp,
-            fanout: task.input.targets.map((head) => ({
+            fanout: fanoutTargets.map((head) => ({
               head,
               requestId: `turn-${task.input.turnNo}-fanout-${head}`,
               prompt: parallel
@@ -518,7 +545,7 @@ export function defineTurnTask(deps: CoordinatorDeps) {
                     roomRef,
                     excerptLimit,
                     mutationNotice: notice,
-                    addressedDirectly: task.input.targets.length < names.length,
+                    addressedDirectly: fanoutTargets.length < names.length,
                   })
                 : "", // built lazily per head in waitAndFinalize (relay)
             })),
@@ -560,7 +587,7 @@ export function defineTurnTask(deps: CoordinatorDeps) {
                     roomRef,
                     excerptLimit,
                     mutationNotice: mutationNotice(freshArb?.mutations ?? [], 0),
-                    addressedDirectly: task.input.targets.length < names.length,
+                    addressedDirectly: fanoutTargets.length < names.length,
                   });
                 },
           },
