@@ -1,5 +1,7 @@
 /* Ettin web UI — renders the room log and live head streams. */
 
+import { mdRender } from "/markdown.js";
+
 const PALETTE = [
   "#7c6cff",
   "#22b8cf",
@@ -75,7 +77,7 @@ function renderEvent(ev) {
       el.innerHTML =
         `<div class="meta"><span class="who">${esc(ev.author)}</span>` +
         `<span>${esc(rec.model ?? "")}</span>${mode}${stop}${parents}${depth}</div>` +
-        `<div class="body">${esc(ev.body)}</div>`;
+        `<div class="body md">${mdRender(ev.body)}</div>`;
       transcriptEl.appendChild(el);
       break;
     }
@@ -134,7 +136,7 @@ function liveEl(head) {
 function headStream(head, delta) {
   const state = liveEl(head);
   state.text += delta;
-  state.el.querySelector(".body").textContent = state.text;
+  state.el.querySelector(".body").innerHTML = mdRender(state.text);
   scrollDown();
 }
 
