@@ -579,6 +579,41 @@ function connect() {
 
 /* ---------- add head ---------- */
 
+async function populateRosters() {
+  // Roster picker: files from ~/.botfiles/config/rosters, entries of the
+  // first file by default. Picking an entry fills the form as an avenor
+  // head (name = entry, model = roster:<file>/<entry>).
+  try {
+    const filesRes = await fetch("/api/roster");
+    const { files } = await filesRes.json();
+    if (!files?.length) return;
+    const file = files[0];
+    const res = await fetch(`/api/roster?file=${encodeURIComponent(file)}`);
+    const { entries } = await res.json();
+    const sel = document.getElementById("new-head-roster");
+    sel.innerHTML = "";
+    const ph = document.createElement("option");
+    ph.value = "";
+    ph.textContent = `— or a roster entry (${file}) —`;
+    sel.appendChild(ph);
+    for (const entry of entries) {
+      const opt = document.createElement("option");
+      opt.value = `roster:${file}/${entry.name}`;
+      opt.textContent = `${entry.name} — ${entry.model}${entry.backend ? ` (${entry.backend})` : ""}`;
+      sel.appendChild(opt);
+    }
+    sel.hidden = false;
+    sel.addEventListener("change", () => {
+      if (!sel.value) return;
+      nameEl ? 0 : 0;
+      document.getElementById("new-head-name").value = sel.value.split("/").at(-1);
+      document.getElementById("new-head-model").value = sel.value;
+    });
+  } catch {
+    /* roster endpoint unavailable; leave the picker hidden */
+  }
+}
+
 async function populateModels() {
   try {
     const res = await fetch("/api/models");
@@ -676,6 +711,7 @@ async function boot() {
   document.getElementById("model-source").textContent =
     `${models.kind}: ${models.models.map((m) => m.modelId).join(", ")}`;
   await populateModels();
+  await populateRosters();
   for (const ev of state.events) renderEvent(ev);
   if (!state.events.length) {
     transcriptEl.innerHTML =

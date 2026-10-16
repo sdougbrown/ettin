@@ -11,7 +11,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import { watchEvents } from "@earendil-works/pi-durable";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { EttinApp } from "./app.ts";
@@ -29,6 +29,10 @@ const MIME: Record<string, string> = {
 export interface ServeOptions {
   port: number;
   uiDir: string;
+}
+
+function isObjectLike(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -222,6 +226,39 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
           events: await app.events(),
           workspace: app.options.workspace,
         });
+        return;
+      }
+      // Roster listing for the add-head form: GET /api/roster → available
+      // roster files; GET /api/roster?file=pi → its entries (name + model).
+      if (url.pathname === "/api/roster" && req.method === "GET") {
+        const dir = join(homedir(), ".botfiles/config/rosters");
+        const file = url.searchParams.get("file");
+        try {
+          if (!file) {
+            const files = readdirSync(dir)
+              .filter((f) => f.endsWith(".json"))
+              .map((f) => f.replace(/\.json$/, ""));
+            json(res, 200, { files });
+            return;
+          }
+          if (!/^[\w.-]+$/.test(file)) {
+            json(res, 400, { error: "bad roster file name" });
+            return;
+          }
+          const raw = readFileSync(join(dir, `${file}.json`), "utf8");
+          const roster = JSON.parse(raw) as Record<string, unknown>;
+          const entries = isObjectLike(roster.entries) ? roster.entries : roster;
+          const list = Object.entries(entries)
+            .filter(([, v]) => typeof v === "object" && v !== null)
+            .map(([name, v]) => ({
+              name,
+              model: String((v as { model?: unknown }).model ?? ""),
+              backend: String((v as { backend?: unknown }).backend ?? ""),
+            }));
+          json(res, 200, { entries: list });
+        } catch (err) {
+          json(res, 400, { error: String(err instanceof Error ? err.message : err) });
+        }
         return;
       }
       if (url.pathname === "/api/models" && req.method === "GET") {
