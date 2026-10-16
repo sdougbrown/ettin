@@ -636,7 +636,14 @@ document.getElementById("add-head").addEventListener("submit", async (e) => {
   e.preventDefault();
   const nameEl = document.getElementById("new-head-name");
   const modelEl = document.getElementById("new-head-model");
-  const name = nameEl.value.trim().toLowerCase();
+  let name = nameEl.value.trim().toLowerCase();
+  let model = modelEl.value;
+  // A `roster:<file>/<entry>` value in the name field declares an
+  // avenor-driven head; the entry's last segment becomes the head name.
+  if (name.startsWith("roster:")) {
+    if (!model) model = name;
+    name = name.split("/").at(-1);
+  }
   if (!name) return;
   const btn = e.target.querySelector("button");
   btn.disabled = true;
