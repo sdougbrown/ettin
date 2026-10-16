@@ -336,8 +336,12 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
           json(res, 400, { error: "name is required" });
           return;
         }
-        const name = body.name.trim().toLowerCase();
-        const model = body.model ?? "";
+        let name = body.name.trim().toLowerCase();
+        let model = body.model ?? "";
+        // A roster spec in the name field is accepted: the entry's last
+        // segment is the head name, and the spec drives the registration.
+        if (name.startsWith("roster:") && !model) model = name;
+        if (name.startsWith("roster:")) name = name.split("/").at(-1)!;
         // A `roster:<file>/<entry>` model spec adds an avenor-driven head.
         if (model.startsWith("roster:")) {
           const ref = model.slice("roster:".length);
