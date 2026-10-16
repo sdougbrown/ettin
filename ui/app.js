@@ -587,7 +587,7 @@ async function populateRosters() {
     const filesRes = await fetch("/api/roster");
     const { files } = await filesRes.json();
     if (!files?.length) return;
-    const file = files[0];
+    const file = files.includes("hybrid") ? "hybrid" : files.toSorted()[0];
     const res = await fetch(`/api/roster?file=${encodeURIComponent(file)}`);
     const { entries } = await res.json();
     const sel = document.getElementById("new-head-roster");
@@ -603,12 +603,23 @@ async function populateRosters() {
       sel.appendChild(opt);
     }
     sel.hidden = false;
-    sel.addEventListener("change", () => {
-      if (!sel.value) return;
-      nameEl ? 0 : 0;
-      document.getElementById("new-head-name").value = sel.value.split("/").at(-1);
-      document.getElementById("new-head-model").value = sel.value;
-    });
+    // Mutually exclusive: an active roster selection owns the form — the
+    // model select is disabled and the name follows the entry. Clearing it
+    // restores the model-driven durable flow.
+    const modelSel = document.getElementById("new-head-model");
+    const nameInput = document.getElementById("new-head-name");
+    const sync = () => {
+      if (sel.value) {
+        modelSel.disabled = true;
+        nameInput.value = sel.value.split("/").at(-1);
+        sel.dataset.wasRoster = "1";
+      } else {
+        if (sel.dataset.wasRoster === "1") nameInput.value = "";
+        modelSel.disabled = false;
+        sel.dataset.wasRoster = "0";
+      }
+    };
+    sel.addEventListener("change", sync);
   } catch {
     /* roster endpoint unavailable; leave the picker hidden */
   }
@@ -671,13 +682,22 @@ document.getElementById("add-head").addEventListener("submit", async (e) => {
   e.preventDefault();
   const nameEl = document.getElementById("new-head-name");
   const modelEl = document.getElementById("new-head-model");
-  let name = nameEl.value.trim().toLowerCase();
-  let model = modelEl.value;
-  // A `roster:<file>/<entry>` value in the name field declares an
-  // avenor-driven head; the entry's last segment becomes the head name.
-  if (name.startsWith("roster:")) {
-    if (!model) model = name;
-    name = name.split("/").at(-1);
+  // An active roster selection wins over the fields.
+  const rosterSel = document.getElementById("new-head-roster");
+  let name;
+  let model;
+  if (rosterSel?.value) {
+    name = rosterSel.value.split("/").at(-1);
+    model = rosterSel.value;
+  } else {
+    name = nameEl.value.trim().toLowerCase();
+    model = modelEl.value;
+    // A `roster:<file>/<entry>` value in the name field declares an
+    // avenor-driven head; the entry's last segment becomes the head name.
+    if (name.startsWith("roster:")) {
+      if (!model) model = name;
+      name = name.split("/").at(-1);
+    }
   }
   if (!name) return;
   const btn = e.target.querySelector("button");
@@ -686,7 +706,7 @@ document.getElementById("add-head").addEventListener("submit", async (e) => {
     const res = await fetch("/api/heads", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name, model: modelEl.value }),
+      body: JSON.stringify({ name, model }),
     });
     const body = await res.json();
     if (!res.ok) {
