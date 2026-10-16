@@ -7,6 +7,9 @@
  * through submissions and owns all turn enforcement.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import {
   createRegistry,
@@ -50,6 +53,9 @@ export interface AppOptions {
   avenorSocket?: string;
   /** Path to the room head-definition file (room.json). */
   roomConfigPath?: string;
+  /** Directory holding avenor roster files (identity-only); defaults to
+   * ~/.botfiles/config/rosters. Relative roster_file refs resolve here. */
+  rostersDir?: string;
   /** Injected avenor client (tests); overrides avenorSocket. */
   avenorClient?: AvenorClient;
 }
@@ -173,6 +179,14 @@ export class EttinApp {
     return this.avenorHeads.delete(name);
   }
 
+  /** Resolve a roster file reference: absolute paths pass through; bare
+   * names and relative paths resolve under the configured rosters dir. */
+  private resolveRosterPath(ref: string): string {
+    const dir = this.options.rostersDir ?? join(homedir(), ".botfiles/config/rosters");
+    if (ref.startsWith("/") || ref.startsWith("~")) return ref.replace(/^~/, join(homedir(), ""));
+    return join(dir, ref.endsWith(".json") ? ref : `${ref}.json`);
+  }
+
   /** Register an avenor-driven head: resolve its roster entry (identity
    * only) and announce it in the room log. Idempotent by name. */
   async registerAvenorHead(
@@ -188,7 +202,7 @@ export class EttinApp {
     if (def.roster_file) {
       try {
         entry = readRosterEntry(
-          (await import("node:fs")).readFileSync(def.roster_file, "utf8"),
+          readFileSync(this.resolveRosterPath(def.roster_file), "utf8"),
           def.roster_entry,
         );
       } catch (err) {
@@ -218,7 +232,7 @@ export class EttinApp {
     if (!this.options.roomConfigPath) return;
     let raw: string;
     try {
-      raw = (await import("node:fs")).readFileSync(this.options.roomConfigPath, "utf8");
+      raw = readFileSync(this.options.roomConfigPath, "utf8");
     } catch (err) {
       throw new Error(`room config ${this.options.roomConfigPath} unreadable: ${String(err)}`);
     }

@@ -39,6 +39,7 @@ const { values } = parseArgs({
     head: { type: "string", multiple: true },
     "avenor-socket": { type: "string", default: "" },
     "room-config": { type: "string", default: "" },
+    "rosters-dir": { type: "string", default: "" },
   },
 });
 
@@ -144,7 +145,11 @@ async function main(): Promise<void> {
     }
   }
 
-  serve(app, { port: Number(values.port), uiDir: join(here, "..", "ui") });
+  serve(app, {
+    port: Number(values.port),
+    uiDir: join(here, "..", "ui"),
+    rostersDir: values["rosters-dir"] || join(homedir(), ".botfiles", "config", "rosters"),
+  });
   console.log(
     `ettin: room ready on http://localhost:${values.port} (workspace: ${app.options.workspace})`,
   );

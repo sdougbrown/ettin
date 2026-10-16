@@ -29,6 +29,8 @@ const MIME: Record<string, string> = {
 export interface ServeOptions {
   port: number;
   uiDir: string;
+  /** Directory holding avenor roster files (identity-only). */
+  rostersDir: string;
 }
 
 function isObjectLike(v: unknown): v is Record<string, unknown> {
@@ -231,7 +233,7 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
       // Roster listing for the add-head form: GET /api/roster → available
       // roster files; GET /api/roster?file=pi → its entries (name + model).
       if (url.pathname === "/api/roster" && req.method === "GET") {
-        const dir = join(homedir(), ".botfiles/config/rosters");
+        const dir = opts.rostersDir;
         const file = url.searchParams.get("file");
         try {
           if (!file) {
