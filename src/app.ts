@@ -182,8 +182,11 @@ export class EttinApp {
   /** Resolve a roster file reference: absolute paths pass through; bare
    * names and relative paths resolve under the configured rosters dir. */
   private resolveRosterPath(ref: string): string {
-    const dir = this.options.rostersDir ?? join(homedir(), ".botfiles/config/rosters");
-    if (ref.startsWith("/") || ref.startsWith("~")) return ref.replace(/^~/, join(homedir(), ""));
+    const dir = this.options.rostersDir;
+    if (ref.startsWith("/")) return ref;
+    if (!dir)
+      throw new Error(`roster file "${ref}" is relative but no --rosters-dir is configured`);
+    if (ref.startsWith("~")) return join(homedir(), ref.slice(1));
     return join(dir, ref.endsWith(".json") ? ref : `${ref}.json`);
   }
 

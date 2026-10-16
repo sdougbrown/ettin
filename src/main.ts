@@ -148,7 +148,9 @@ async function main(): Promise<void> {
   serve(app, {
     port: Number(values.port),
     uiDir: join(here, "..", "ui"),
-    rostersDir: values["rosters-dir"] || join(homedir(), ".botfiles", "config", "rosters"),
+    rostersDir: values["rosters-dir"]
+      ? values["rosters-dir"].replace(/^~(?=\/|$)/, homedir())
+      : undefined,
   });
   console.log(
     `ettin: room ready on http://localhost:${values.port} (workspace: ${app.options.workspace})`,

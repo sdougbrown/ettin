@@ -29,8 +29,9 @@ const MIME: Record<string, string> = {
 export interface ServeOptions {
   port: number;
   uiDir: string;
-  /** Directory holding avenor roster files (identity-only). */
-  rostersDir: string;
+  /** Directory holding avenor roster files (identity-only); unset when
+   * --rosters-dir is not configured. */
+  rostersDir?: string;
 }
 
 function isObjectLike(v: unknown): v is Record<string, unknown> {
@@ -233,6 +234,10 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
       // Roster listing for the add-head form: GET /api/roster → available
       // roster files; GET /api/roster?file=pi → its entries (name + model).
       if (url.pathname === "/api/roster" && req.method === "GET") {
+        if (!opts.rostersDir) {
+          json(res, 200, { files: [] });
+          return;
+        }
         const dir = opts.rostersDir;
         const file = url.searchParams.get("file");
         try {
