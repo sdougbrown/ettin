@@ -9,7 +9,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import {
   createRegistry,
@@ -67,6 +67,21 @@ export interface AvenorHeadRegistration {
   entry: Record<string, unknown>;
 }
 
+/** pi-durable allows exactly one process per storage (no cross-process
+ * locking). A second ettin on the same DB interleaves durable commits with
+ * the live room and crashes it (observed 2026-10-16: a head-spawned test
+ * instance reused the default ./data/ettin.sqlite). The pid lock file
+ * turns that into a loud startup error; a stale lock from a crashed
+ * process is taken over. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 export class EttinApp {
   rc!: RoomContext;
   heads!: HeadManager;
@@ -83,8 +98,55 @@ export class EttinApp {
    * increment. Durable heads listed in the config ARE activated on open. */
   avenorHeads = new Map<string, AvenorHeadRegistration>();
   roomConfig: RoomConfig | null = null;
+  /** Set while this process owns the storage lock (see acquireStorageLock). */
+  private lockPath?: string;
 
   constructor(public options: AppOptions) {}
+
+  /** pi-durable allows exactly one process per storage (no cross-process
+   * locking). A second ettin on the same DB interleaves durable commits with
+   * the live room and crashes it (observed 2026-10-16: a head-spawned test
+   * instance reused the default ./data/ettin.sqlite). The pid lock file
+   * turns that into a loud startup error; a stale lock from a crashed
+   * process is taken over. */
+  private acquireStorageLock(): void {
+    if (this.options.dbPath === ":memory:") return;
+    const lockPath = `${this.options.dbPath}.lock`;
+    for (;;) {
+      let fd: number;
+      try {
+        fd = openSync(lockPath, "wx");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        const held = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+        if (Number.isFinite(held) && held !== process.pid && pidAlive(held)) {
+          throw new Error(
+            `db ${this.options.dbPath} is owned by a running ettin (pid ${held}). ` +
+              `Stop that process, or pass --db for a separate store.`,
+            { cause: err },
+          );
+        }
+        unlinkSync(lockPath); // stale: the owner is gone
+        continue;
+      }
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      this.lockPath = lockPath;
+      process.on("exit", () => this.releaseStorageLock());
+      return;
+    }
+  }
+
+  private releaseStorageLock(): void {
+    if (!this.lockPath) return;
+    const path = this.lockPath;
+    this.lockPath = undefined;
+    try {
+      unlinkSync(path);
+    } catch {
+      /* already gone */
+    }
+  }
 
   async open(ctx: Context = BACKGROUND_CONTEXT): Promise<void> {
     this.models =
@@ -92,6 +154,7 @@ export class EttinApp {
     if (this.options.governor) this.governor = this.options.governor;
     const registry = createRegistry();
 
+    this.acquireStorageLock();
     const storage =
       this.options.dbPath === ":memory:"
         ? new MemoryStorage()
@@ -380,5 +443,6 @@ export class EttinApp {
 
   async close(ctx: Context = BACKGROUND_CONTEXT): Promise<void> {
     await this.rc.harness.close(ctx);
+    this.releaseStorageLock();
   }
 }

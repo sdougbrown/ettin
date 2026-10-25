@@ -281,7 +281,14 @@ export function defineTurnTask(deps: CoordinatorDeps) {
       // The room treats anything but a clean stop as needing the operator.
       blocked: stopReason !== "" && stopReason !== "stop",
     };
-    const next = { ...cp, settled: [...cp.settled, activation] };
+    const next = {
+      ...cp,
+      settled: [...cp.settled, activation],
+      // done is recorded in the same commit as the settlement: a crash
+      // before the next commit would otherwise resubmit the ref, hit the
+      // requestId dedup, and append the head's output a second time.
+      done: [...cp.done, ref.requestId],
+    };
     await runtime.commit(() => ({ status: "running" as const, checkpoint: next }), ctx);
     return next;
   }
@@ -416,7 +423,6 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         cp,
         ctx,
       );
-      cp = { ...cp, done: [...cp.done, pending.ref.requestId] };
     };
 
     /** Poll runtime status until a settled phase; resolve with the terminal
@@ -650,14 +656,15 @@ export function defineTurnTask(deps: CoordinatorDeps) {
         if (route.targets.length === 0) route.targets = task.input.targets;
         const parallel = route.parallel;
         const fanoutTargets = route.targets;
-        await appendGovernor(
-          runtime,
-          `fanout ${fanoutTargets.join(",")} parallel=${parallel}: ${route.reason}`,
-          cp.depth,
-          ctx,
-        );
-
         if (cp.fanout.length === 0) {
+          // Inside the guard: a resumed task re-enters this phase with
+          // fanout refs already built, and must not re-append the event.
+          await appendGovernor(
+            runtime,
+            `fanout ${fanoutTargets.join(",")} parallel=${parallel}: ${route.reason}`,
+            cp.depth,
+            ctx,
+          );
           cp = {
             ...cp,
             fanout: fanoutTargets.map((head) => ({
