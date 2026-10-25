@@ -11,6 +11,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import { watchEvents } from "@earendil-works/pi-durable";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -418,15 +419,41 @@ export function serve(app: EttinApp, opts: ServeOptions): { close: () => Promise
         json(res, 200, { head: record });
         return;
       }
-      // Static UI.
+      // Static UI. index.html is never cached (so it always re-resolves the
+      // hash-busted asset URLs); app.js/style.css are served with their
+      // content hash as a query string, so a change produces a new URL and
+      // the browser fetches fresh instead of serving a stale copy.
       const rel = url.pathname === "/" ? "/index.html" : url.pathname;
       const file = join(opts.uiDir, rel.replace(/\/\.\./g, ""));
       try {
-        const data = readFileSync(file);
-        res.writeHead(200, {
-          "content-type": MIME[file.slice(file.lastIndexOf("."))] ?? "application/octet-stream",
-        });
-        res.end(data);
+        const raw = readFileSync(file);
+        const ext = file.slice(file.lastIndexOf("."));
+        const mime = MIME[ext] ?? "application/octet-stream";
+        if (ext === ".html") {
+          const bust = (name: string) =>
+            createHash("sha256")
+              .update(readFileSync(join(opts.uiDir, name)))
+              .digest("hex")
+              .slice(0, 10);
+          const html = raw
+            .toString()
+            .replace('src="/app.js"', `src="/app.js?v=${bust("app.js")}"`)
+            .replace('href="/style.css"', `href="/style.css?v=${bust("style.css")}"`);
+          res.writeHead(200, {
+            "content-type": mime,
+            "cache-control": "no-cache",
+            "content-length": Buffer.byteLength(html),
+          });
+          res.end(html);
+        } else {
+          // Hashed asset: immutable for the lifetime of this hash.
+          res.writeHead(200, {
+            "content-type": mime,
+            "cache-control": "immutable, max-age=31536000",
+            "content-length": raw.length,
+          });
+          res.end(raw);
+        }
       } catch {
         res.writeHead(404, { "content-type": "text/plain" });
         res.end("not found");
